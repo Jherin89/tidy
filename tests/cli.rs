@@ -206,6 +206,7 @@ fn init_refuses_to_overwrite_unless_forced_and_rules_shows_the_source() {
         .assert()
         .success()
         .stdout(predicate::str::contains("built-in defaults"))
+        .stdout(predicate::str::contains("Duplicates"))
         .stdout(predicate::str::contains("Old installers"));
 
     tidy(tmp.path()).args(["init"]).assert().success();
@@ -213,6 +214,7 @@ fn init_refuses_to_overwrite_unless_forced_and_rules_shows_the_source() {
     assert!(rules.is_file());
     let text = fs::read_to_string(&rules).unwrap();
     assert!(text.contains("[[rules]]"));
+    assert!(text.contains("name = \"Duplicates\""));
     assert!(text.contains("Screenshots"));
 
     tidy(tmp.path())
@@ -265,6 +267,313 @@ fn older_than_flag_filters_before_rules() {
         .unwrap()
         .iter()
         .any(|item| item["file"] == "new.pdf"));
+}
+
+#[test]
+fn subcommand_help_omits_flags_that_do_not_apply() {
+    let init = String::from_utf8(
+        tidy(sandbox().path())
+            .args(["init", "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(!init.contains("--apply"), "{init}");
+    assert!(!init.contains("--older-than"), "{init}");
+    assert!(!init.contains("--rules"), "{init}");
+    assert!(!init.contains("--json"), "{init}");
+
+    let undo = String::from_utf8(
+        tidy(sandbox().path())
+            .args(["undo", "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(undo.contains("--json"), "{undo}");
+    assert!(!undo.contains("--apply"), "{undo}");
+    assert!(!undo.contains("--older-than"), "{undo}");
+    assert!(!undo.contains("--rules"), "{undo}");
+
+    let watch = String::from_utf8(
+        tidy(sandbox().path())
+            .args(["watch", "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(watch.contains("--older-than"), "{watch}");
+    assert!(watch.contains("--rules"), "{watch}");
+    assert!(watch.contains("--json"), "{watch}");
+    assert!(!watch.contains("--apply"), "{watch}");
+}
+
+#[test]
+fn explain_json_matches_a_duplicate_and_leaves_a_young_installer() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("invoice.pdf"),
+        b"same-invoice",
+        Duration::from_secs(3 * 86_400),
+    );
+    write_aged(
+        &dir.join("invoice (1).pdf"),
+        b"same-invoice",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("Docker.dmg"),
+        b"dmg-new",
+        Duration::from_secs(5 * 86_400),
+    );
+    write_aged(
+        &dir.join(".secret.pdf"),
+        b"hide",
+        Duration::from_secs(86_400),
+    );
+
+    let assert = tidy(tmp.path())
+        .args(["explain", "--json"])
+        .arg(dir.join("invoice (1).pdf"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["outcome"]["status"], "matched");
+    assert_eq!(value["outcome"]["rule"], "Duplicates");
+    assert_eq!(value["outcome"]["action"], "trash");
+    assert_eq!(
+        value["outcome"]["destination"],
+        "Trash (copy of invoice.pdf)"
+    );
+    assert_eq!(value["outcome"]["copy_of"], "invoice.pdf");
+    assert!(value["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|rule| rule["name"] == "Duplicates" && rule["result"] == "wins"));
+    assert!(value["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|rule| rule["result"] == "not evaluated"));
+
+    tidy(tmp.path())
+        .args(["explain"])
+        .arg(dir.join("Docker.dmg"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no rule matches; left in place"))
+        .stdout(predicate::str::contains("needs ≥ 30d"));
+
+    tidy(tmp.path())
+        .args(["explain"])
+        .arg(dir.join(".secret.pdf"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hidden"));
+
+    tidy(tmp.path())
+        .args(["explain", "--json"])
+        .arg(dir.join("missing.pdf"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file not found"));
+
+    let rules = tmp.path().join("broken.toml");
+    fs::write(&rules, "[[rules]\n").unwrap();
+    tidy(tmp.path())
+        .args(["explain", "--rules"])
+        .arg(&rules)
+        .arg(dir.join("invoice.pdf"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid rules file"));
+}
+
+#[test]
+fn json_before_the_subcommand_still_selects_json() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .args(["--json", "rules"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"source\""));
+
+    tidy(tmp.path())
+        .args(["undo", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tidy:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn launchd_install_status_and_uninstall_use_the_fake_launchctl() {
+    let tmp = sandbox();
+    let root = tmp.path();
+    let log = root.join("launchctl.log");
+    let script = root.join("launchctl");
+    let body = "if [ \"$1\" = print ]; then\ncat <<'EOF'\nstate = running\npid = 4242\nlast exit code = 0\nEOF\nfi\nif [ \"$1\" = bootout ]; then\nexit 3\nfi\nexit 0\n";
+    let text = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}",
+        log.display()
+    );
+    fs::write(&script, text).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let folder = root.join("inbox & <drafts>");
+    fs::create_dir_all(&folder).unwrap();
+    let home = root.join("home");
+
+    let tidy_at = |args: &[&str]| {
+        let mut cmd = tidy(root);
+        cmd.env("TIDY_LAUNCHCTL", &script)
+            .env("TIDY_UID", "501")
+            .args(args);
+        cmd
+    };
+
+    let printed = tidy_at(&["watch", "--install", "--print"])
+        .arg(&folder)
+        .assert()
+        .success();
+    let xml = String::from_utf8(printed.get_output().stdout.clone()).unwrap();
+    let err = String::from_utf8(printed.get_output().stderr.clone()).unwrap();
+    assert!(xml.starts_with("<?xml"), "{xml}");
+    assert!(xml.contains("com.github.jherin89.tidy"), "{xml}");
+    assert!(xml.contains("a&amp;") || xml.contains("&amp;"), "{xml}");
+    assert!(xml.contains("&lt;drafts&gt;"), "{xml}");
+    assert!(xml.contains("<string>watch</string>"), "{xml}");
+    assert!(xml.contains("Background"), "{xml}");
+    assert!(err.contains("Using binary"), "{err}");
+    assert!(
+        !home
+            .join("Library/LaunchAgents/com.github.jherin89.tidy.plist")
+            .exists(),
+        "--print must not write a plist"
+    );
+
+    tidy_at(&["watch", "--install"])
+        .arg(&folder)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Using binary"))
+        .stdout(predicate::str::contains(
+            "Loaded gui/501/com.github.jherin89.tidy",
+        ));
+
+    let plist = home.join("Library/LaunchAgents/com.github.jherin89.tidy.plist");
+    let written = fs::read_to_string(&plist).unwrap();
+    assert!(written.contains("&amp;"), "{written}");
+    assert!(written.contains("&lt;drafts&gt;"), "{written}");
+    assert!(written.contains("<key>RunAtLoad</key>"), "{written}");
+    assert!(written.contains("<key>KeepAlive</key>"), "{written}");
+    assert!(written.contains("Library/Logs/tidy.log"), "{written}");
+
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains("bootout gui/501/com.github.jherin89.tidy"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains(&format!("bootstrap gui/501 {}", plist.display())),
+        "{calls}"
+    );
+
+    fs::write(&plist, "<plist>different</plist>\n").unwrap();
+    tidy_at(&["watch", "--install"])
+        .arg(&folder)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+    assert_eq!(
+        fs::read_to_string(&plist).unwrap(),
+        "<plist>different</plist>\n"
+    );
+
+    tidy_at(&["watch", "--install", "--force"])
+        .arg(&folder)
+        .assert()
+        .success();
+    assert!(fs::read_to_string(&plist)
+        .unwrap()
+        .contains("com.github.jherin89.tidy"));
+
+    fs::create_dir_all(home.join("Library/Logs")).unwrap();
+    fs::write(
+        home.join("Library/Logs/tidy.log"),
+        "line-one\nline-two\nsettled invoice.pdf\n",
+    )
+    .unwrap();
+
+    let status = tidy_at(&["watch", "--status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status = String::from_utf8(status).unwrap();
+    assert!(status.contains("present"), "{status}");
+    assert!(status.contains("running"), "{status}");
+    assert!(status.contains("4242"), "{status}");
+    assert!(status.contains("inbox & <drafts>"), "{status}");
+    assert!(status.contains("settled invoice.pdf"), "{status}");
+    assert!(status.contains("tidy.log"), "{status}");
+
+    let json = tidy_at(&["watch", "--status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(json["loaded"], true);
+    assert_eq!(json["state"], "running");
+    assert_eq!(json["pid"], 4242);
+    assert_eq!(json["last_exit_code"], 0);
+    assert_eq!(json["plist_exists"], true);
+
+    tidy_at(&["watch", "--uninstall"]).assert().success();
+    assert!(!plist.exists());
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls
+            .matches("bootout gui/501/com.github.jherin89.tidy")
+            .count()
+            >= 2,
+        "{calls}"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn install_without_a_launchctl_override_explains_that_launchd_is_macos_only() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .env_remove("TIDY_LAUNCHCTL")
+        .args(["watch", "--install"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "launchd is macOS-only; on Linux use a systemd user service — see README",
+        ));
+    assert!(!tmp
+        .path()
+        .join("home/Library/LaunchAgents/com.github.jherin89.tidy.plist")
+        .exists());
 }
 
 fn trash_has(dir: &Path, bytes: &[u8]) -> bool {

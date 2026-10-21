@@ -193,6 +193,7 @@ mod tests {
                 status: ActionStatus::Applied,
                 error: None,
                 trashed_at_unix: None,
+                copy_of: None,
             }],
             unmatched: vec![],
             skipped: vec![],

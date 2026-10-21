@@ -54,6 +54,39 @@ pub fn parse_size(input: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("size `{input}` is too large"))
 }
 
+/// Compact age such as `5d 3h`, `3h 4m`, `4m 2s`, or `9s`.
+///
+/// Zero components are left out. Days and hours are the pair `tidy explain`
+/// shows for files that are at least a day old.
+pub fn format_age(age: Duration) -> String {
+    let secs = age.as_secs();
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    let seconds = secs % 60;
+    if days > 0 {
+        if hours > 0 {
+            format!("{days}d {hours}h")
+        } else {
+            format!("{days}d")
+        }
+    } else if hours > 0 {
+        if mins > 0 {
+            format!("{hours}h {mins}m")
+        } else {
+            format!("{hours}h")
+        }
+    } else if mins > 0 {
+        if seconds > 0 {
+            format!("{mins}m {seconds}s")
+        } else {
+            format!("{mins}m")
+        }
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 /// Decimal (1000-based) size for tables. `1536` is `1.5 KB`.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: &[(u64, &str)] = &[
@@ -152,6 +185,19 @@ mod tests {
         for bad in ["", "MB", "1.5MB", "-1KB", "10xb", "1PB"] {
             assert!(parse_size(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn formats_ages_with_the_two_largest_units() {
+        assert_eq!(
+            format_age(Duration::from_secs(5 * 86_400 + 3 * 3_600)),
+            "5d 3h"
+        );
+        assert_eq!(format_age(Duration::from_secs(5 * 86_400)), "5d");
+        assert_eq!(format_age(Duration::from_secs(3 * 3_600 + 4 * 60)), "3h 4m");
+        assert_eq!(format_age(Duration::from_secs(90)), "1m 30s");
+        assert_eq!(format_age(Duration::from_secs(9)), "9s");
+        assert_eq!(format_age(Duration::ZERO), "0s");
     }
 
     #[test]

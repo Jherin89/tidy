@@ -6,45 +6,134 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+# Linux archives are statically linked musl builds (x86_64 on ubuntu-latest,
+# aarch64 native on ubuntu-24.04-arm). The dependency tree does not need
+# OpenSSL. If a future crate cannot link against musl, switch that job to the
+# gnu target and update the archive name, scripts/bump-homebrew.sh, and the
+# README together.
 
 jobs:
-  macos-aarch64:
-    name: aarch64-apple-darwin
+  macos-universal:
+    name: universal-apple-darwin
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.1
         with:
-          targets: aarch64-apple-darwin
-      - name: Build
-        run: cargo build --release --target aarch64-apple-darwin
-      - name: Package
-        shell: bash
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build both architectures
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          name="tidy-${version}-aarch64-apple-darwin"
-          stage="dist/${name}"
-          mkdir -p "${stage}"
-          cp "target/aarch64-apple-darwin/release/tidy" "${stage}/tidy"
-          chmod +x "${stage}/tidy"
-          cp LICENSE README.md "${stage}/"
-          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Create a universal binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin
+          lipo -create \
+            target/aarch64-apple-darwin/release/tidy \
+            target/x86_64-apple-darwin/release/tidy \
+            -output dist/bin/tidy
+          lipo -info dist/bin/tidy
+          chmod +x dist/bin/tidy
       - name: Smoke test
         run: |
-          ./target/aarch64-apple-darwin/release/tidy --version
+          set -euo pipefail
+          ./dist/bin/tidy --version
           mkdir -p "$RUNNER_TEMP/dl"
-          ./target/aarch64-apple-darwin/release/tidy "$RUNNER_TEMP/dl"
+          ./dist/bin/tidy "$RUNNER_TEMP/dl"
+      - name: Package
+        run: bash .github/package-archive.sh universal-apple-darwin dist/bin/tidy
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tidy-universal-apple-darwin
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  linux-x86_64:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          bin="target/x86_64-unknown-linux-musl/release/tidy"
+          "$bin" --version
+          mkdir -p "$RUNNER_TEMP/dl"
+          "$bin" "$RUNNER_TEMP/dl"
+      - name: Package
+        run: bash .github/package-archive.sh x86_64-unknown-linux-musl target/x86_64-unknown-linux-musl/release/tidy
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tidy-x86_64-unknown-linux-musl
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  linux-aarch64:
+    name: aarch64-unknown-linux-musl
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --target aarch64-unknown-linux-musl
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          bin="target/aarch64-unknown-linux-musl/release/tidy"
+          "$bin" --version
+          mkdir -p "$RUNNER_TEMP/dl"
+          "$bin" "$RUNNER_TEMP/dl"
+      - name: Package
+        run: bash .github/package-archive.sh aarch64-unknown-linux-musl target/aarch64-unknown-linux-musl/release/tidy
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tidy-aarch64-unknown-linux-musl
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release:
+    name: GitHub release
+    needs: [macos-universal, linux-x86_64, linux-aarch64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tidy-*
+          merge-multiple: true
+          path: dist
       - name: Release notes
         id: notes
         shell: bash
         run: |
           f="docs/release-notes/${GITHUB_REF_NAME}.md"
           if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; fi
-      - name: Attach archive
-        uses: softprops/action-gh-release@v2
+      - name: Publish
+        uses: softprops/action-gh-release@v3
         with:
           name: tidy ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.path }}

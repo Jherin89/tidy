@@ -11,6 +11,9 @@ mk() { # name size_kb age
   touch -d "$3" "$D/$1"
 }
 mk "invoice-2026-03.pdf"                       184 "3 days ago"
+# Exact extra copy. The original is older, so it is the keeper.
+cp "$D/invoice-2026-03.pdf" "$D/invoice-2026-03 (1).pdf"
+touch -d "1 day ago" "$D/invoice-2026-03 (1).pdf"
 mk "Lease_Agreement_signed.pdf"                912 "40 days ago"
 mk "IMG_4821.HEIC"                            2310 "6 days ago"
 mk "IMG_4822.HEIC"                            2275 "6 days ago"

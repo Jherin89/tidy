@@ -23,6 +23,13 @@
 #                  use powers of 1000. Binary units (KiB, MiB, GiB, TiB) use
 #                  powers of 1024. Examples: "100MB", "500KB", "1GiB"
 #   smaller_than   Size is at most this big. Same units as larger_than.
+#   duplicate      true matches an extra byte-for-byte copy of another
+#                  eligible file in this folder. false matches a file that is
+#                  not an extra copy. The keeper (oldest modified time, then
+#                  the shortest name, then alphabetical) is never an extra
+#                  copy, so it falls through to the rules below. Zero-byte
+#                  files are ignored. The comparison sees the whole folder,
+#                  including files that --older-than left out of the plan.
 #
 # Comparisons on size and age are inclusive.
 #
@@ -42,6 +49,15 @@
 #
 # Preview with `tidy`. Perform the plan with `tidy --apply`.
 # `tidy rules` prints the rules that are actually in effect.
+# `tidy explain FILE` shows which conditions passed.
+
+# Extra copies go to the Trash. This rule is first so a duplicate PDF is
+# not filed twice. The keeper stays in the folder and is handled below.
+# Undo puts a trashed copy back, the same as any other trash rule.
+[[rules]]
+name = "Duplicates"
+duplicate = true
+action = "trash"
 
 # Screenshots are listed before the general image rule so they win.
 [[rules]]

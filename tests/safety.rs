@@ -5,11 +5,29 @@ use std::path::Path;
 
 #[test]
 fn user_file_removal_lives_only_in_the_relocate_fallback() {
+    // `relocate.rs` removes a user file only after a verified cross-device copy.
+    // `launchd.rs` is the one exception: `--uninstall` deletes the LaunchAgent
+    // plist tidy wrote (`com.github.jherin89.tidy.plist`). That is tidy's own
+    // config file, not a download.
     let hits = scan(|text| text.contains("remove_file") || text.contains("remove_dir_all"));
     assert_eq!(
         hits,
-        vec!["relocate.rs".to_string()],
-        "remove_file / remove_dir_all should only appear in relocate.rs"
+        vec!["launchd.rs".to_string(), "relocate.rs".to_string()],
+        "remove_file / remove_dir_all should only appear in relocate.rs and launchd.rs"
+    );
+    let launchd = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("launchd.rs"),
+    )
+    .unwrap();
+    assert!(
+        launchd.contains("com.github.jherin89.tidy.plist"),
+        "the launchd removal must stay limited to tidy's own plist"
+    );
+    assert!(
+        launchd.contains("fs::remove_file(&plist)"),
+        "launchd may remove only the plist path it computed"
     );
 }
 

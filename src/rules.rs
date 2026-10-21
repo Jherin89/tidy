@@ -7,10 +7,11 @@ use std::time::{Duration, SystemTime};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
+use crate::duplicates::DuplicateIndex;
 use crate::env::Env;
 use crate::error::Error;
-use crate::names::extension_matches;
-use crate::parse::{parse_duration, parse_size};
+use crate::names::{extension_matches, last_extension};
+use crate::parse::{format_age, format_size, parse_duration, parse_size};
 use crate::scan::FileEntry;
 use crate::DEFAULT_RULES;
 
@@ -43,36 +44,184 @@ pub struct Rule {
     pub larger_than_text: Option<String>,
     pub smaller_than: Option<u64>,
     pub smaller_than_text: Option<String>,
+    /// `Some(true)` matches an extra copy. `Some(false)` matches everything
+    /// that is not an extra copy. `None` does not look at duplicates.
+    pub duplicate: Option<bool>,
     pub action: Action,
 }
 
+/// One condition, and why it passed or failed. `tidy explain` prints these.
+/// [`Rule::matches`] is this result's `matched` flag, so the two cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionExplain {
+    pub name: &'static str,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleExplain {
+    pub matched: bool,
+    pub conditions: Vec<ConditionExplain>,
+}
+
 impl Rule {
-    pub fn matches(&self, file: &FileEntry, now: SystemTime) -> bool {
-        if !self.extensions.is_empty() && !extension_matches(&file.name, &self.extensions) {
-            return false;
+    /// Evaluate every condition. The rule matches when all of them pass.
+    pub fn explain(
+        &self,
+        file: &FileEntry,
+        now: SystemTime,
+        duplicates: &DuplicateIndex,
+    ) -> RuleExplain {
+        let mut conditions = Vec::new();
+
+        if !self.extensions.is_empty() {
+            let matched = matching_extension(&file.name, &self.extensions);
+            let passed = matched.is_some();
+            let detail = extension_detail(&file.name, &self.extensions, matched.as_deref());
+            conditions.push(ConditionExplain {
+                name: "extensions",
+                passed,
+                detail,
+            });
         }
-        if let Some(set) = &self.globset {
-            if !set.is_match(&file.name) {
-                return false;
-            }
+
+        if self.globset.is_some() {
+            let passed = self
+                .globset
+                .as_ref()
+                .is_some_and(|set| set.is_match(&file.name));
+            let list = self.globs.join(", ");
+            let detail = if passed {
+                format!("matches {list}")
+            } else {
+                format!("does not match {list}")
+            };
+            conditions.push(ConditionExplain {
+                name: "glob",
+                passed,
+                detail,
+            });
         }
+
         if let Some(min_age) = self.older_than {
-            if !is_older_than(file.modified, now, min_age) {
-                return false;
-            }
+            let passed = is_older_than(file.modified, now, min_age);
+            let need = self
+                .older_than_text
+                .clone()
+                .unwrap_or_else(|| format_age(min_age));
+            let detail = match now.duration_since(file.modified) {
+                Ok(age) => format!("{} old, needs ≥ {need}", format_age(age)),
+                Err(_) => format!("modified in the future, needs ≥ {need}"),
+            };
+            conditions.push(ConditionExplain {
+                name: "older_than",
+                passed,
+                detail,
+            });
         }
+
         if let Some(min_size) = self.larger_than {
-            if file.size < min_size {
-                return false;
-            }
+            let passed = file.size >= min_size;
+            let limit = self
+                .larger_than_text
+                .clone()
+                .unwrap_or_else(|| format_size(min_size));
+            let actual = format_size(file.size);
+            let detail = if passed {
+                format!("{actual} ≥ {limit}")
+            } else {
+                format!("{actual} < {limit} (needs ≥ {limit})")
+            };
+            conditions.push(ConditionExplain {
+                name: "larger_than",
+                passed,
+                detail,
+            });
         }
+
         if let Some(max_size) = self.smaller_than {
-            if file.size > max_size {
-                return false;
-            }
+            let passed = file.size <= max_size;
+            let limit = self
+                .smaller_than_text
+                .clone()
+                .unwrap_or_else(|| format_size(max_size));
+            let actual = format_size(file.size);
+            let detail = if passed {
+                format!("{actual} ≤ {limit}")
+            } else {
+                format!("{actual} > {limit} (needs ≤ {limit})")
+            };
+            conditions.push(ConditionExplain {
+                name: "smaller_than",
+                passed,
+                detail,
+            });
         }
-        true
+
+        if let Some(want_extra) = self.duplicate {
+            let keeper = duplicates.keeper_of(&file.path);
+            let is_extra = keeper.is_some();
+            let passed = is_extra == want_extra;
+            let detail = duplicate_detail(file, duplicates, keeper);
+            conditions.push(ConditionExplain {
+                name: "duplicate",
+                passed,
+                detail,
+            });
+        }
+
+        RuleExplain {
+            matched: conditions.iter().all(|condition| condition.passed),
+            conditions,
+        }
     }
+
+    pub fn matches(&self, file: &FileEntry, now: SystemTime, duplicates: &DuplicateIndex) -> bool {
+        self.explain(file, now, duplicates).matched
+    }
+}
+
+fn matching_extension(name: &str, extensions: &[String]) -> Option<String> {
+    if !extension_matches(name, extensions) {
+        return None;
+    }
+    let lower = name.to_ascii_lowercase();
+    let last = last_extension(name);
+    extensions
+        .iter()
+        .find(|ext| {
+            if ext.contains('.') {
+                lower.ends_with(&format!(".{ext}"))
+            } else {
+                last.as_deref() == Some(ext.as_str())
+            }
+        })
+        .cloned()
+}
+
+fn extension_detail(name: &str, extensions: &[String], matched: Option<&str>) -> String {
+    let list = extensions.join(", ");
+    if let Some(ext) = matched {
+        return format!("{ext} is in {list}");
+    }
+    match last_extension(name) {
+        Some(ext) => format!("{ext} is not in {list}"),
+        None => format!("no extension; needs one of {list}"),
+    }
+}
+
+fn duplicate_detail(file: &FileEntry, duplicates: &DuplicateIndex, keeper: Option<&str>) -> String {
+    if let Some(name) = keeper {
+        return format!("extra copy of {name}");
+    }
+    if file.size == 0 {
+        return "not an extra copy (zero-byte files are ignored)".to_string();
+    }
+    if duplicates.is_keeper(&file.path) {
+        return "not an extra copy (this file is the one that is kept)".to_string();
+    }
+    "not an extra copy".to_string()
 }
 
 /// Inclusive: a file whose age is exactly `min_age` matches.
@@ -227,14 +376,16 @@ fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
         None => None,
     };
 
+    let duplicate = raw.duplicate;
     if extensions.is_empty()
         && globs.is_empty()
         && older_than.is_none()
         && larger_than.is_none()
         && smaller_than.is_none()
+        && duplicate.is_none()
     {
         return Err(format!(
-            "{label}: set at least one condition (extensions, glob, older_than, larger_than, or smaller_than)"
+            "{label}: set at least one condition (extensions, glob, older_than, larger_than, smaller_than, or duplicate)"
         ));
     }
 
@@ -301,6 +452,7 @@ fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
         larger_than_text,
         smaller_than,
         smaller_than_text,
+        duplicate,
         action,
     })
 }
@@ -375,6 +527,8 @@ struct RawRule {
     larger_than: Option<String>,
     #[serde(default)]
     smaller_than: Option<String>,
+    #[serde(default)]
+    duplicate: Option<bool>,
     action: String,
     #[serde(default)]
     destination: Option<String>,
@@ -450,6 +604,9 @@ pub fn render_rules(ruleset: &Ruleset, color: bool) -> String {
         if let Some(text) = &rule.smaller_than_text {
             out.push_str(&format!("   smaller_than: {text}\n"));
         }
+        if let Some(flag) = rule.duplicate {
+            out.push_str(&format!("   duplicate: {flag}\n"));
+        }
         match &rule.action {
             Action::Trash => out.push_str("   action: trash\n"),
             Action::Move {
@@ -488,6 +645,7 @@ pub fn render_rules_json(ruleset: &Ruleset) -> Result<String, Error> {
                 "older_than": rule.older_than_text,
                 "larger_than": rule.larger_than_text,
                 "smaller_than": rule.smaller_than_text,
+                "duplicate": rule.duplicate,
                 "action": action,
                 "destination": destination,
                 "by_date": by_date,
@@ -548,6 +706,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "Duplicates",
                 "Screenshots",
                 "Old installers",
                 "PDFs",
@@ -573,8 +732,17 @@ mod tests {
             destination = "~/Documents/PDFs"
             "#,
         );
-        assert!(set[0].matches(&entry("Report.PDF", 10, StdDuration::from_secs(1)), now()));
-        assert!(!set[0].matches(&entry("Report.txt", 10, StdDuration::from_secs(1)), now()));
+        let none = DuplicateIndex::empty();
+        assert!(set[0].matches(
+            &entry("Report.PDF", 10, StdDuration::from_secs(1)),
+            now(),
+            &none
+        ));
+        assert!(!set[0].matches(
+            &entry("Report.txt", 10, StdDuration::from_secs(1)),
+            now(),
+            &none
+        ));
     }
 
     #[test]
@@ -590,10 +758,16 @@ mod tests {
             "#,
         );
         let rule = &set[0];
-        assert!(rule.matches(&entry("screenshot 1.PNG", 10, StdDuration::ZERO), now()));
-        assert!(rule.matches(&entry("Screen Shot 2024.png", 10, StdDuration::ZERO), now()));
-        assert!(!rule.matches(&entry("screenshot 1.jpg", 10, StdDuration::ZERO), now()));
-        assert!(!rule.matches(&entry("photo.png", 10, StdDuration::ZERO), now()));
+        let none = DuplicateIndex::empty();
+        let at = now();
+        assert!(rule.matches(&entry("screenshot 1.PNG", 10, StdDuration::ZERO), at, &none));
+        assert!(rule.matches(
+            &entry("Screen Shot 2024.png", 10, StdDuration::ZERO),
+            at,
+            &none
+        ));
+        assert!(!rule.matches(&entry("screenshot 1.jpg", 10, StdDuration::ZERO), at, &none));
+        assert!(!rule.matches(&entry("photo.png", 10, StdDuration::ZERO), at, &none));
     }
 
     #[test]
@@ -612,25 +786,40 @@ mod tests {
         let rule = &set[0];
         let day = StdDuration::from_secs(86400);
         let at = now();
+        let none = DuplicateIndex::empty();
         let hit = FileEntry {
             path: PathBuf::from("a.pdf"),
             name: "a.pdf".into(),
             size: 1000,
             modified: at - 30 * day,
         };
-        assert!(rule.matches(&hit, at));
+        assert!(rule.matches(&hit, at, &none));
+        let why = rule.explain(&hit, at, &none);
+        assert!(why.matched);
+        assert!(why
+            .conditions
+            .iter()
+            .any(|c| c.name == "older_than" && c.passed));
         let mut too_new = hit.clone();
         too_new.modified = at - 30 * day + StdDuration::from_secs(1);
-        assert!(!rule.matches(&too_new, at));
+        assert!(!rule.matches(&too_new, at, &none));
+        let age = rule.explain(&too_new, at, &none);
+        let older = age
+            .conditions
+            .iter()
+            .find(|c| c.name == "older_than")
+            .unwrap();
+        assert!(!older.passed);
+        assert!(older.detail.contains("needs ≥ 30d"), "{}", older.detail);
         let mut too_small = hit.clone();
         too_small.size = 999;
-        assert!(!rule.matches(&too_small, at));
+        assert!(!rule.matches(&too_small, at, &none));
         let mut too_big = hit.clone();
         too_big.size = 5001;
-        assert!(!rule.matches(&too_big, at));
+        assert!(!rule.matches(&too_big, at, &none));
         let mut wrong_ext = hit.clone();
         wrong_ext.name = "a.txt".into();
-        assert!(!rule.matches(&wrong_ext, at));
+        assert!(!rule.matches(&wrong_ext, at, &none));
     }
 
     #[test]
@@ -650,8 +839,62 @@ mod tests {
             "#,
         );
         let file = entry("notes.txt", 4, StdDuration::from_secs(10));
-        let winner = set.iter().find(|rule| rule.matches(&file, now())).unwrap();
+        let none = DuplicateIndex::empty();
+        let winner = set
+            .iter()
+            .find(|rule| rule.matches(&file, now(), &none))
+            .unwrap();
         assert_eq!(winner.name, "First");
+    }
+
+    #[test]
+    fn duplicate_true_matches_only_the_extra_copy() {
+        let set = rules(
+            r#"
+            [[rules]]
+            name = "Duplicates"
+            duplicate = true
+            action = "trash"
+
+            [[rules]]
+            name = "Unique pdf"
+            duplicate = false
+            extensions = ["pdf"]
+            action = "move"
+            destination = "~/Documents/PDFs"
+            "#,
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path();
+        let keeper = entry_at(folder, "invoice.pdf", b"same", StdDuration::from_secs(50));
+        let extra = entry_at(
+            folder,
+            "invoice (1).pdf",
+            b"same",
+            StdDuration::from_secs(10),
+        );
+        let index = DuplicateIndex::build(folder, &[keeper.clone(), extra.clone()]).unwrap();
+        let at = now();
+        assert!(!set[0].matches(&keeper, at, &index));
+        assert!(set[0].matches(&extra, at, &index));
+        let why = set[0].explain(&extra, at, &index);
+        assert_eq!(why.conditions[0].detail, "extra copy of invoice.pdf");
+        assert!(set[1].matches(&keeper, at, &index));
+        assert!(!set[1].matches(&extra, at, &index));
+        let kept = set[0].explain(&keeper, at, &index);
+        assert!(kept.conditions[0].detail.contains("kept"));
+    }
+
+    fn entry_at(folder: &std::path::Path, name: &str, bytes: &[u8], age: StdDuration) -> FileEntry {
+        let path = folder.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let at = now();
+        FileEntry {
+            path,
+            name: name.to_string(),
+            size: bytes.len() as u64,
+            modified: at - age,
+        }
     }
 
     #[test]

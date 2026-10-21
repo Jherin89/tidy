@@ -19,7 +19,8 @@ use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
 use crate::apply::apply_plan;
 use crate::env::Env;
 use crate::error::Error;
-use crate::plan::{plan_entries, Plan};
+use crate::plan::{plan_watched, Plan};
+use crate::privacy;
 use crate::rules::Ruleset;
 use crate::scan::{self, Inspect};
 use crate::trash::Trasher;
@@ -139,7 +140,7 @@ pub fn watch_folder(
     debouncer
         .watcher()
         .watch(folder, RecursiveMode::NonRecursive)
-        .map_err(|err| Error::msg(format!("could not watch {}: {err}", folder.display())))?;
+        .map_err(|err| watch_start_error(folder, err))?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -178,7 +179,7 @@ pub fn watch_folder(
         if entries.is_empty() {
             continue;
         }
-        let mut plan = plan_entries(env, folder, entries, Vec::new(), rules, now)?;
+        let mut plan = plan_watched(env, folder, entries, rules, now)?;
         apply_plan(env, &mut plan, trasher)?;
         on_plan(&plan);
     }
@@ -196,6 +197,25 @@ fn observe_path(
 ) {
     let size = eligible_size(folder, path, older_than, SystemTime::now());
     stabilizer.observe(path.to_path_buf(), size, Instant::now());
+}
+
+fn watch_start_error(folder: &Path, err: impl std::fmt::Display) -> Error {
+    let text = err.to_string();
+    let io_err = std::io::Error::other(text.clone());
+    if privacy::is_operation_not_permitted(&io_err)
+        || text
+            .to_ascii_lowercase()
+            .contains("operation not permitted")
+    {
+        let source = std::io::Error::other("Operation not permitted");
+        privacy::annotate(
+            folder,
+            format!("could not watch {}", folder.display()),
+            source,
+        )
+    } else {
+        Error::msg(format!("could not watch {}: {text}", folder.display()))
+    }
 }
 
 fn eligible_size(

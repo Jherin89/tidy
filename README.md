@@ -11,7 +11,7 @@
   <a href="https://github.com/Jherin89/tidy/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Jherin89/tidy?sort=semver"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Rust 1.85+" src="https://img.shields.io/badge/rust-1.85%2B-orange.svg">
-  <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-black.svg">
+  <img alt="macOS universal and Linux musl" src="https://img.shields.io/badge/binaries-macOS%20universal%20%2B%20Linux%20musl-black.svg">
 </p>
 
 <p align="center">
@@ -54,11 +54,12 @@ tidy works the other way around:
 ## Features
 
 - **Preview table by default.** Shows file, matched rule, action, destination, and size, plus totals per rule and per action.
-- **Rules that match on extension, name pattern, age, and size**, combined however you like. The first matching rule wins.
+- **Rules that match on extension, name pattern, age, size, and duplicate copies**, combined however you like. The first matching rule wins.
 - **Two actions:** move to any folder (created when needed, with `~` expansion and optional `YYYY-MM` subfolders), or send to the system **Trash**.
-- **Sensible built-in rules**, so it works with no setup. Run `tidy init` to get an editable copy.
+- **Sensible built-in rules**, so it works with no setup. The first rule sends extra byte-identical copies to the Trash. Run `tidy init` to get an editable copy.
+- **`tidy explain FILE`** shows why that file would be skipped, matched, or left in place.
 - **Undo log** for every applied run, and `tidy undo` to reverse the latest one.
-- **Watch mode:** `tidy watch` sorts new downloads as soon as they finish.
+- **Watch mode:** `tidy watch` sorts new downloads as soon as they finish. On a Mac, `tidy watch --install` registers a login agent.
 - **Skips files that aren't finished or aren't yours to move:** partial downloads (`.crdownload`, `.part`, `.download`, `.tmp`, `.partial`), hidden files like `.DS_Store`, folders, and symlinks.
 - **`--json` output** for scripts and automations.
 - **A single small binary.** No runtime and no background service unless you set one up.
@@ -80,54 +81,66 @@ tidy is built so that the worst outcome of a bad rule is a few files in the wron
 | **Undo** | Every `--apply` (and every watch batch) writes a JSON log. `tidy undo` moves files back to where they were and removes the now-empty folders the run created. Folders that held something before the run, or that you've put something in since, are left alone. |
 | **Careful cross-disk moves** | When source and destination are on different disks, tidy copies, checks the size, and only then removes the original. |
 | **Leaves partial files alone** | In-progress downloads, hidden files, folders, and symlinks are never touched. |
+| **One config file tidy deletes** | `tidy watch --uninstall` removes the LaunchAgent plist tidy wrote (`~/Library/LaunchAgents/com.github.jherin89.tidy.plist`). That is tidy's own agent file, not a download. |
 
 > [!IMPORTANT]
 > **macOS Trash caveat.** On macOS, apps can put files *into* the Trash but there is no supported way to take them back *out* programmatically. So on a Mac, `tidy undo` moves every *moved* file back automatically, but for *trashed* files it prints each file name and its original location so you can drag them back from the Trash (or select them in Finder and choose **File → Put Back**). On Linux and Windows, trashed files are restored automatically.
 
 ## Setup guide (step by step)
 
-You don't need to know Rust to use tidy. Pick **Option A** (download the app, about 2 minutes) or **Option B** (build it yourself).
+You don't need to know Rust to use tidy. Pick **Homebrew**, a **release archive**, or **build it yourself**.
 
-### Option A: download the prebuilt Mac binary (Apple Silicon: M1/M2/M3/M4)
+### Option A: Homebrew
 
-1. **Check your Mac's chip.** Click the Apple menu → **About This Mac**. If it says *Apple M1/M2/M3/M4*, continue. (Intel Mac? Use Option B.)
-2. **Download** `tidy-0.1.0-aarch64-apple-darwin.tar.gz` from the [latest release](https://github.com/Jherin89/tidy/releases/latest). Your browser saves it to `~/Downloads`.
-3. **Open Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type *Terminal*, press <kbd>Return</kbd>).
-4. **Optional: check the download.** Compare this output with the `.sha256` file on the release page:
+```bash
+brew install jherin89/tap/tidy
+tidy --version
+```
+
+The formula installs the universal macOS binary, or the static musl binary on Linux.
+
+### Option B: download a release archive
+
+1. **Download** the archive for your machine from the [latest release](https://github.com/Jherin89/tidy/releases/latest):
+   - Mac (Apple Silicon or Intel): `tidy-0.2.0-universal-apple-darwin.tar.gz`
+   - Linux x86_64: `tidy-0.2.0-x86_64-unknown-linux-musl.tar.gz`
+   - Linux aarch64: `tidy-0.2.0-aarch64-unknown-linux-musl.tar.gz`
+2. **Open Terminal.**
+3. **Optional: check the download.** Compare this output with the `.sha256` file on the release page (`shasum -a 256` writes `hash  filename`):
    ```bash
    cd ~/Downloads
-   shasum -a 256 tidy-0.1.0-aarch64-apple-darwin.tar.gz
+   shasum -a 256 tidy-0.2.0-universal-apple-darwin.tar.gz
    ```
-5. **Unpack it:**
+4. **Unpack it** (use the name you downloaded):
    ```bash
-   tar -xzf tidy-0.1.0-aarch64-apple-darwin.tar.gz
+   tar -xzf tidy-0.2.0-universal-apple-darwin.tar.gz
    ```
-6. **Remove the download quarantine flag.** The binary isn't notarized by Apple, so without this step macOS says it "cannot be opened because the developer cannot be verified":
+5. **On a Mac, remove the quarantine flag.** The binary isn't notarized, so without this step macOS says it "cannot be opened because the developer cannot be verified":
    ```bash
-   xattr -d com.apple.quarantine tidy-0.1.0-aarch64-apple-darwin/tidy
+   xattr -d com.apple.quarantine tidy-0.2.0-universal-apple-darwin/tidy
    ```
-   If it says `No such xattr`, the flag wasn't set and you can move on.
-7. **Put `tidy` on your PATH.** Choose one:
+   If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step.
+6. **Put `tidy` on your PATH.** Choose one:
    - **For your user only (no password needed):**
      ```bash
      mkdir -p ~/.local/bin
-     mv tidy-0.1.0-aarch64-apple-darwin/tidy ~/.local/bin/
+     mv tidy-0.2.0-universal-apple-darwin/tidy ~/.local/bin/
      echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
      source ~/.zshrc
      ```
    - **System-wide (asks for your password):**
      ```bash
      sudo mkdir -p /usr/local/bin
-     sudo mv tidy-0.1.0-aarch64-apple-darwin/tidy /usr/local/bin/
+     sudo mv tidy-0.2.0-universal-apple-darwin/tidy /usr/local/bin/
      ```
-8. **Verify it works:**
+7. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.1.0
+   tidy --version     # → tidy 0.2.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-9. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.1.0-aarch64-apple-darwin*`
+8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.2.0-*`
 
-### Option B: build from source with Rust (any Mac, Linux, or Windows)
+### Option C: build from source with Rust (any Mac, Linux, or Windows)
 
 1. **Install Rust** with the official installer, [rustup](https://rustup.rs), and accept the defaults:
    ```bash
@@ -144,7 +157,7 @@ You don't need to know Rust to use tidy. Pick **Option A** (download the app, ab
 
 > **Note on the name:** the command is `tidy`, but the Cargo *package* is named **`tidy-dl`**, because `tidy` on crates.io belongs to an unrelated project. Install from this repository as shown above. `cargo install tidy` would install that other project.
 
-**Updating:** download the newer release (Option A), or run `cargo install --git https://github.com/Jherin89/tidy --force` (Option B).
+**Updating:** `brew upgrade tidy`, download the newer release (Option B), or run `cargo install --git https://github.com/Jherin89/tidy --force` (Option C).
 **Uninstalling:** delete the `tidy` binary (`which tidy` shows where it is). You can also remove the config and log folders listed in [Where tidy keeps its files](#where-tidy-keeps-its-files).
 
 ## Usage guide (step by step)
@@ -193,6 +206,7 @@ Re-run with --apply to perform these actions.
 - **destination**: where it will go. `~` means your home folder. If a file with that name is already there, you'll see a ` (1)` suffix.
 - **Unmatched** files match no rule and stay where they are. In the example, `Docker.dmg` is an installer but it's only 5 days old, so the 30-day "Old installers" rule doesn't apply yet.
 - **Skipped** files are never touched: hidden files, folders, symlinks, and downloads still in progress.
+- **Duplicate copies** (0.2) show a destination like `Trash (copy of invoice-2026-03.pdf)`. The screenshot above is the 0.1 recording. The demo folder script now also drops an exact copy, `invoice-2026-03 (1).pdf`, which the first built-in rule trashes. The older original stays and is filed by the PDF rule. Ask `tidy explain` if you want the condition-by-condition trace.
 
 ### 3. Apply it
 
@@ -261,51 +275,67 @@ tidy --json | jq -r '.entries[] | "\(.rule)\t\(.file)"'
 tidy --apply --json > last-run.json
 ```
 
-The output is one JSON document with `mode` (`dry-run` or `applied`), `entries` (file, path, size, rule, action, destination, status), `unmatched`, `skipped`, `summary`, `log_path`, and `errors`. `tidy rules --json` and `tidy undo --json` work too. Errors go to stderr with a `tidy:` prefix and a nonzero exit code.
+The output is one JSON document with `mode` (`dry-run` or `applied`), `entries` (file, path, size, rule, action, destination, status, and `copy_of` when the file is an extra copy), `unmatched`, `skipped`, `summary`, `log_path`, and `errors`. `tidy rules --json`, `tidy undo --json`, `tidy explain FILE --json`, and `tidy watch --status --json` work too. Errors go to stderr with a `tidy:` prefix and a nonzero exit code.
 
 ### 9. Sort new downloads automatically: `tidy watch`
 
 ```bash
 tidy watch               # watches ~/Downloads; press Ctrl-C to stop
 tidy watch ~/Desktop
+tidy watch --older-than 7d
 ```
 
-Watch mode waits until a new file's size has stopped changing for about 2 seconds, then applies your rules to it. It ignores `.crdownload`/`.part` files and picks up the finished file once the browser renames it. Watch mode **applies immediately** (that's its job), but every batch is still logged, so `tidy undo` works. It only reacts to new or changed files. To clean up what's already there, run `tidy --apply` once.
+Watch mode waits until a new file's size has stopped changing for about 2 seconds, then applies your rules to it. It ignores `.crdownload`/`.part` files and picks up the finished file once the browser renames it. Watch mode **applies immediately** (that's its job), but every batch is still logged, so `tidy undo` works. It only reacts to new or changed files. To clean up what's already there, run `tidy --apply` once. Duplicate detection still looks at the whole folder, so a new file that matches an existing one byte for byte is an extra copy.
 
 #### Keep it running in the background on macOS (launchd)
 
-1. Find the full path of the binary: `which tidy` (for example `/Users/you/.local/bin/tidy`).
-2. Save this as `~/Library/LaunchAgents/com.github.jherin89.tidy.plist`, replacing both `/Users/you` paths:
-   ```xml
-   <?xml version="1.0" encoding="UTF-8"?>
-   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-   <plist version="1.0">
-   <dict>
-     <key>Label</key>             <string>com.github.jherin89.tidy</string>
-     <key>ProgramArguments</key>
-     <array>
-       <string>/Users/you/.local/bin/tidy</string>
-       <string>watch</string>
-     </array>
-     <key>RunAtLoad</key>         <true/>
-     <key>KeepAlive</key>         <true/>
-     <key>StandardOutPath</key>   <string>/Users/you/Library/Logs/tidy.log</string>
-     <key>StandardErrorPath</key> <string>/Users/you/Library/Logs/tidy.log</string>
-   </dict>
-   </plist>
-   ```
-3. Load it (it also starts at every login):
-   ```bash
-   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.jherin89.tidy.plist
-   ```
-4. Check on it with `tail -f ~/Library/Logs/tidy.log`. Stop it with:
-   ```bash
-   launchctl bootout gui/$(id -u)/com.github.jherin89.tidy
-   ```
+> **New in 0.2 — needs confirmation on a real Mac.** The helper was checked with a stand-in for `launchctl` and by linting the plist. Load it once on your Mac before you depend on it.
 
-If the log shows `Operation not permitted`, macOS is blocking background access to Downloads. Open **System Settings → Privacy & Security → Full Disk Access**, click **+**, press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>G</kbd>, paste the path from step 1, and add it.
+```bash
+tidy watch --install              # ~/Downloads, current tidy binary
+tidy watch --install ~/Desktop
+tidy watch --status
+tidy watch --uninstall            # bootout, then delete the plist tidy wrote
+```
 
-**Linux:** run `tidy watch` from a systemd user service with `Restart=on-failure` instead.
+`--install` writes `~/Library/LaunchAgents/com.github.jherin89.tidy.plist` and loads it with `launchctl bootstrap`. The agent runs `tidy watch` on that folder at login and restarts if it exits. Logs go to `~/Library/Logs/tidy.log`. A Homebrew Cellar path (`…/Cellar/tidy/<version>/bin/tidy`) is rewritten to the stable `bin/tidy` (or `opt/tidy/bin/tidy`) so `brew upgrade` does not strand the agent. An existing plist that differs is left alone until you pass `--force`.
+
+`tidy watch --install --print` prints that plist and does nothing else. It works on Linux too, which is how CI runs `plutil -lint`.
+
+If the log shows `Operation not permitted`, macOS Privacy & Security is blocking access. Grant **Full Disk Access** (or **Files and Folders → Downloads**) to the terminal app, or to the tidy binary path printed by `--status`, when the agent is the thing being blocked.
+
+**Linux:** launchd is macOS-only. Run `tidy watch` from a systemd user service:
+
+```ini
+# ~/.config/systemd/user/tidy.service
+[Unit]
+Description=tidy watch
+
+[Service]
+ExecStart=%h/.cargo/bin/tidy watch
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now tidy.service
+```
+
+Adjust `ExecStart` if `tidy` lives somewhere else (`which tidy`).
+
+### 10. Ask why one file matched: `tidy explain`
+
+```bash
+tidy explain ~/Downloads/invoice-2026-03\ \(1\).pdf
+tidy explain ~/Downloads/Docker.dmg
+tidy explain --json ~/Downloads/report.pdf
+tidy explain --rules ./rules.toml ~/Downloads/report.pdf
+```
+
+Read-only. tidy evaluates the file as if it were tidying that file's parent folder, using the same matcher as the plan. It first says if the file would be skipped (hidden, partial download, directory, symlink, missing). Otherwise it prints every condition of each rule with pass or fail, including the real age (`5d 3h old, needs ≥ 30d`) and, for a duplicate, which file is kept. The first matching rule wins. Later rules are marked "not evaluated". The outcome is the winning rule, action, and destination (with the same collision suffix the plan would choose), or `no rule matches; left in place`. Exit 0 when the file was evaluated, whether or not a rule matched. A missing file or a bad rules file exits nonzero.
 
 ## Writing rules
 
@@ -352,7 +382,13 @@ older_than = "60d"
 smaller_than = "5MB"
 action = "trash"
 
-# 6. Relative destination = a subfolder of the folder being tidied
+# 6. Extra byte-identical copies → Trash. Put this above the general rules.
+[[rules]]
+name = "Duplicates"
+duplicate = true
+action = "trash"
+
+# 7. Relative destination = a subfolder of the folder being tidied
 [[rules]]
 name = "Archives"
 extensions = ["zip", "tar.gz", "7z"]
@@ -369,8 +405,11 @@ Put specific rules (like *Invoices*) **above** general ones (like *PDFs*), or th
 | `older_than` | Last modified at least this long ago. | `"30d"`, `"12h"`, `"2w"` |
 | `larger_than` | At least this big. | `"100MB"`, `"1GiB"` |
 | `smaller_than` | At most this big. | `"500KB"` |
+| `duplicate` | `true`: an extra byte-identical copy of another eligible file in this folder. `false`: not an extra copy. | `true` |
 
 Within one condition, any value may match (OR). Different conditions must all match (AND). Every rule needs at least one condition.
+
+`duplicate = true` ignores zero-byte files. tidy groups the other eligible files by size, hashes only the sizes that occur more than once (SHA-256, streamed), and keeps one file per hash: oldest modified time, then shortest name, then alphabetical name. Every other file in the group is "a copy of" that keeper. The keeper itself does not match `duplicate = true`, so a later rule can file it. The comparison uses the whole folder, including files that `--older-than` left out of the plan, and including files already in the folder when `tidy watch` sees a new copy.
 
 | Action | Fields | Effect |
 | --- | --- | --- |
@@ -383,16 +422,17 @@ These rules apply until you create a rules file. `tidy init` writes them out so 
 
 | # | Rule | Matches | Action |
 | --- | --- | --- | --- |
-| 1 | Screenshots | `Screenshot*` / `Screen Shot*` (png, jpg, jpeg, webp) | move → `~/Pictures/Screenshots/YYYY-MM/` |
-| 2 | Old installers | dmg, pkg, exe, msi, deb, rpm, AppImage, iso, **older than 30 days** | **Trash** |
-| 3 | PDFs | pdf | move → `~/Documents/PDFs` |
-| 4 | Images | jpg, jpeg, png, gif, webp, heic, heif, tif, tiff, bmp, svg | move → `~/Pictures/Downloads` |
-| 5 | Videos | mp4, mov, mkv, avi, webm, m4v, wmv | move → `~/Movies/Downloads` |
-| 6 | Audio | mp3, wav, flac, aac, m4a, ogg, wma, aiff | move → `~/Music/Downloads` |
-| 7 | Spreadsheets | xls, xlsx, csv, ods, numbers, tsv | move → `~/Documents/Spreadsheets` |
-| 8 | Documents | doc, docx, txt, rtf, odt, md, pages, ppt, pptx, key, odp | move → `~/Documents/Downloads` |
-| 9 | Old archives | zip, tar, gz, tgz, bz2, xz, 7z, rar, tar.gz, tar.bz2, tar.xz, **older than 14 days** | move → `~/Downloads/Archives` |
-| 10 | Ebooks | epub, mobi, azw, azw3 | move → `~/Documents/Books` |
+| 1 | Duplicates | extra byte-identical copy of another file in the folder | **Trash** (`Trash (copy of <keeper>)`) |
+| 2 | Screenshots | `Screenshot*` / `Screen Shot*` (png, jpg, jpeg, webp) | move → `~/Pictures/Screenshots/YYYY-MM/` |
+| 3 | Old installers | dmg, pkg, exe, msi, deb, rpm, AppImage, iso, **older than 30 days** | **Trash** |
+| 4 | PDFs | pdf | move → `~/Documents/PDFs` |
+| 5 | Images | jpg, jpeg, png, gif, webp, heic, heif, tif, tiff, bmp, svg | move → `~/Pictures/Downloads` |
+| 6 | Videos | mp4, mov, mkv, avi, webm, m4v, wmv | move → `~/Movies/Downloads` |
+| 7 | Audio | mp3, wav, flac, aac, m4a, ogg, wma, aiff | move → `~/Music/Downloads` |
+| 8 | Spreadsheets | xls, xlsx, csv, ods, numbers, tsv | move → `~/Documents/Spreadsheets` |
+| 9 | Documents | doc, docx, txt, rtf, odt, md, pages, ppt, pptx, key, odp | move → `~/Documents/Downloads` |
+| 10 | Old archives | zip, tar, gz, tgz, bz2, xz, 7z, rar, tar.gz, tar.bz2, tar.xz, **older than 14 days** | move → `~/Downloads/Archives` |
+| 11 | Ebooks | epub, mobi, azw, azw3 | move → `~/Documents/Books` |
 
 Recent installers and archives are left alone on purpose, because you may still need them.
 
@@ -402,6 +442,8 @@ Recent installers and archives are left alone on purpose, because you may still 
 | --- | --- | --- | --- |
 | Rules file | `~/.config/tidy/rules.toml` (also reads `~/Library/Application Support/tidy/rules.toml`) | `~/.config/tidy/rules.toml` (`$XDG_CONFIG_HOME`) | `%APPDATA%\tidy\rules.toml` |
 | Undo logs | `~/Library/Application Support/tidy/logs/` | `~/.local/share/tidy/logs/` | `%APPDATA%\tidy\logs\` |
+| LaunchAgent (macOS) | `~/Library/LaunchAgents/com.github.jherin89.tidy.plist` | — | — |
+| Watch log (macOS) | `~/Library/Logs/tidy.log` | — | — |
 
 On macOS, tidy prefers `~/.config/tidy/rules.toml` if it exists, otherwise `~/Library/Application Support/tidy/rules.toml`. `--rules FILE` overrides both. `tidy rules` always shows which file is in use.
 
@@ -417,6 +459,9 @@ Undo logs are plain JSON, one file per run (`run-<timestamp>.json`), listing eac
 | `TIDY_DATA_DIR` | Replaces the data directory. Logs go to `$TIDY_DATA_DIR/tidy/logs/`. |
 | `TIDY_FAKE_TRASH` | Moves "trashed" files into this folder instead of the real Trash. |
 | `TIDY_WATCH_SETTLE_MS` | How long a watched file's size must stay unchanged (default `2000`). |
+| `TIDY_LAUNCHCTL` | `launchctl` binary. Tests point this at a fake script. On Linux, setting it is what allows `--install` to run. |
+| `TIDY_UID` | User id written into `gui/<uid>/…`. Default is the output of `id -u`. |
+| `TIDY_TRASH_METHOD` | macOS only. Unset uses Finder (Put Back works). `nsfilemanager` uses `NSFileManager` and is what the headless CI job sets. |
 | `NO_COLOR` / `CLICOLOR_FORCE=1` | Turn color off / force it on even when piped. |
 
 The demo GIF and screenshots were recorded with these variables pointing at a throwaway folder ([`docs/demo/`](docs/demo)), so no real files were touched.
@@ -433,12 +478,18 @@ The demo GIF and screenshots were recorded with these variables pointing at a th
 | `tidy --rules FILE [PATH]` | Use a specific rules file. |
 | `tidy init [--force]` | Write the built-in rules to your rules file. Won't overwrite without `--force`. |
 | `tidy config --init` / `--show` | Same as `tidy init` / `tidy rules`. |
-| `tidy rules [--json]` | Show the active rules and where they came from. |
+| `tidy rules [--json] [--rules FILE]` | Show the active rules and where they came from. |
 | `tidy undo [--json]` | Reverse the most recent run that hasn't been undone. |
-| `tidy watch [PATH]` | Watch a folder and sort new files as they finish. Ctrl-C to stop. |
+| `tidy explain FILE [--json] [--rules FILE]` | Show why one file would be skipped, matched, or left in place. |
+| `tidy watch [PATH] [--older-than] [--rules FILE] [--json]` | Watch a folder and sort new files as they finish. Ctrl-C to stop. |
+| `tidy watch --install [PATH] [--print] [--force]` | Install the macOS launchd agent. `--print` only writes the plist to stdout. |
+| `tidy watch --status [--json]` | Show the agent, the watched folder, and the last log lines. |
+| `tidy watch --uninstall` | Unload the agent and delete its plist. |
 | `tidy --help`, `tidy --version` | Help and version. |
 
-Exit codes: `0` on success; `1` on errors (missing or invalid folder, bad rules file, a failed action, or an undo that couldn't put every file back).
+`tidy config --init` and `tidy config --show` still work and stay hidden from help. Prefer `tidy init` and `tidy rules`.
+
+Exit codes: `0` on success, including an explain that matches nothing. `1` on errors (missing or invalid folder, missing explain target, bad rules file, a failed action, or an undo that couldn't put every file back, including a macOS trash item you have to restore by hand).
 
 ## FAQ and troubleshooting
 
@@ -454,12 +505,17 @@ The folder you put it in isn't on your PATH. For `~/.local/bin`: `echo 'export P
 
 <details><summary><b><code>bad CPU type in executable</code></b></summary>
 
-You downloaded the Apple Silicon build on an Intel Mac. Use [Option B](#option-b-build-from-source-with-rust-any-mac-linux-or-windows).
+You unpacked a single-architecture build on the other Mac chip. The 0.2 release archive `tidy-0.2.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
 </details>
 
 <details><summary><b><code>Operation not permitted</code> when reading ~/Downloads</b></summary>
 
-macOS privacy protection. Allow your terminal app (or the `tidy` binary, if it runs from launchd) under **System Settings → Privacy & Security → Files and Folders** or **Full Disk Access**.
+macOS Privacy & Security is blocking access. Grant **Full Disk Access** (or **Files and Folders → Downloads**) to the terminal app you launched tidy from. When tidy is running from launchd, grant it to the tidy binary path shown by `tidy watch --status` (or the "tidy binary at …" path in the error). Then run the command again.
+</details>
+
+<details><summary><b>Why did two copies of the same file go to different places?</b></summary>
+
+The oldest copy is the keeper and follows the normal rules (a PDF is filed under PDFs). Every other byte-identical copy matches **Duplicates** and goes to the Trash, shown as `Trash (copy of <keeper>)`. `tidy explain` on each file prints that decision. Zero-byte files are never treated as duplicates.
 </details>
 
 <details><summary><b>Why wasn't a file moved?</b></summary>
@@ -469,12 +525,12 @@ Look at the preview. It's either **Unmatched** (no rule fits, often because of a
 
 <details><summary><b>Can tidy delete my files?</b></summary>
 
-No. The only removal action is `trash`, and things in the Trash stay there until *you* empty it. Moves never overwrite.
+No. The only removal action is `trash`, and things in the Trash stay there until *you* empty it. Moves never overwrite. The one file tidy itself deletes is the LaunchAgent plist from `tidy watch --uninstall`.
 </details>
 
 <details><summary><b>I emptied the Trash. Can undo bring files back?</b></summary>
 
-No. Once the Trash is emptied, the files are gone. That's why `trash` rules in the defaults only target old installers.
+No. Once the Trash is emptied, the files are gone. The default trash rules target extra copies and installers older than 30 days.
 </details>
 
 <details><summary><b>Does it look inside subfolders?</b></summary>
@@ -499,10 +555,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-- The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically.
-- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads or Trash. Please keep it that way. A test also checks that no new code can delete files.
-- CI runs fmt, clippy, and tests on every push and PR. Pushing a `v*` tag builds the macOS Apple Silicon binary and attaches it to a GitHub Release.
-- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (needs [vhs](https://github.com/charmbracelet/vhs)).
+- The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically. New dependencies must build on that compiler.
+- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads, Trash, or `launchctl`. Please keep it that way. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plist.
+- CI runs fmt, clippy, and tests on Ubuntu and macOS 14. The macOS job lints `tidy watch --install --print` with `plutil` and runs a real-Trash test only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
+- Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`), attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists.
+- To refresh the Homebrew formula in a local tap clone: `scripts/bump-homebrew.sh /path/to/homebrew-tap` (downloads checksums with your `gh` login; add `--commit` to commit, and `--push` to push). `--dry-run` or `--sha-from-dir` renders the formula without a release.
+- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`.
 
 ## License
 

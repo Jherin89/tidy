@@ -8,11 +8,12 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
+use crate::duplicates::DuplicateIndex;
 use crate::env::{contract_home, expand_tilde, Env};
 use crate::error::Error;
 use crate::names::collision_name;
-use crate::rules::{Action, Ruleset};
-use crate::scan::{inspect, FileEntry, Inspect, Skipped};
+use crate::rules::{is_older_than, Action, Ruleset};
+use crate::scan::{self, inspect, FileEntry, Inspect, Skipped};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
@@ -42,6 +43,8 @@ pub struct PlannedAction {
     /// Unix seconds recorded when a file was trashed. Used to find the
     /// matching Trash item on undo. `None` for moves and for planned trash.
     pub trashed_at_unix: Option<i64>,
+    /// Set when the winning rule matched `duplicate = true`.
+    pub copy_of: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,49 @@ impl Plan {
     }
 }
 
+/// Eligible files, the skip list, and the duplicate index for one folder.
+///
+/// The index is built from every eligible file, then `--older-than` removes
+/// young files from the plan. A young keeper still makes an old extra copy
+/// match `duplicate = true`.
+pub struct FolderView {
+    pub entries: Vec<FileEntry>,
+    pub skipped: Vec<Skipped>,
+    pub duplicates: DuplicateIndex,
+}
+
+pub fn view_folder(
+    folder: &Path,
+    older_than: Option<std::time::Duration>,
+    now: SystemTime,
+) -> Result<FolderView, Error> {
+    let (all_entries, mut skipped) = scan::scan(folder, None, now)?;
+    let duplicates = DuplicateIndex::build(folder, &all_entries)?;
+    let entries = if let Some(min_age) = older_than {
+        let mut kept = Vec::new();
+        for file in all_entries {
+            if is_older_than(file.modified, now, min_age) {
+                kept.push(file);
+            } else {
+                skipped.push(Skipped {
+                    path: file.path,
+                    name: file.name,
+                    reason: scan::SkipReason::NewerThanFilter,
+                });
+            }
+        }
+        skipped.sort_by(|a, b| scan::compare_names(&a.name, &b.name));
+        kept
+    } else {
+        all_entries
+    };
+    Ok(FolderView {
+        entries,
+        skipped,
+        duplicates,
+    })
+}
+
 /// Scan `folder` and build a plan. `now` is injectable so tests are stable.
 pub fn plan_folder(
     env: &Env,
@@ -88,8 +134,29 @@ pub fn plan_folder(
     older_than: Option<std::time::Duration>,
     now: SystemTime,
 ) -> Result<Plan, Error> {
-    let (entries, skipped) = crate::scan::scan(folder, older_than, now)?;
-    plan_entries(env, folder, entries, skipped, rules, now)
+    let view = view_folder(folder, older_than, now)?;
+    plan_entries(
+        env,
+        folder,
+        view.entries,
+        view.skipped,
+        rules,
+        now,
+        &view.duplicates,
+    )
+}
+
+/// Plan a watch batch. Duplicate detection still sees the whole folder, so a
+/// new file identical to one already there is an extra copy.
+pub fn plan_watched(
+    env: &Env,
+    folder: &Path,
+    entries: Vec<FileEntry>,
+    rules: &Ruleset,
+    now: SystemTime,
+) -> Result<Plan, Error> {
+    let duplicates = DuplicateIndex::for_folder(folder, now)?;
+    plan_entries(env, folder, entries, Vec::new(), rules, now, &duplicates)
 }
 
 pub fn plan_entries(
@@ -99,16 +166,17 @@ pub fn plan_entries(
     skipped: Vec<Skipped>,
     rules: &Ruleset,
     now: SystemTime,
+    duplicates: &DuplicateIndex,
 ) -> Result<Plan, Error> {
     let mut reserved = HashSet::new();
     let mut actions = Vec::new();
     let mut unmatched = Vec::new();
 
     for file in entries {
-        match first_match(rules, &file, now) {
+        match first_match(rules, &file, now, duplicates) {
             None => unmatched.push(file),
             Some(rule) => {
-                let planned = plan_one(env, folder, &file, rule, &mut reserved)?;
+                let planned = plan_one(env, folder, &file, rule, duplicates, &mut reserved)?;
                 actions.push(planned);
             }
         }
@@ -140,8 +208,12 @@ fn first_match<'a>(
     rules: &'a Ruleset,
     file: &FileEntry,
     now: SystemTime,
+    duplicates: &DuplicateIndex,
 ) -> Option<&'a crate::rules::Rule> {
-    rules.rules.iter().find(|rule| rule.matches(file, now))
+    rules
+        .rules
+        .iter()
+        .find(|rule| rule.matches(file, now, duplicates))
 }
 
 fn plan_one(
@@ -149,19 +221,32 @@ fn plan_one(
     folder: &Path,
     file: &FileEntry,
     rule: &crate::rules::Rule,
+    duplicates: &DuplicateIndex,
     reserved: &mut HashSet<PathBuf>,
 ) -> Result<PlannedAction, Error> {
+    let copy_of = if rule.duplicate == Some(true) {
+        duplicates.keeper_of(&file.path).map(str::to_string)
+    } else {
+        None
+    };
     match &rule.action {
-        Action::Trash => Ok(PlannedAction {
-            file: file.clone(),
-            rule_name: rule.name.clone(),
-            kind: ActionKind::Trash,
-            destination: None,
-            destination_display: "Trash".to_string(),
-            status: ActionStatus::Planned,
-            error: None,
-            trashed_at_unix: None,
-        }),
+        Action::Trash => {
+            let destination_display = match &copy_of {
+                Some(keeper) => format!("Trash (copy of {keeper})"),
+                None => "Trash".to_string(),
+            };
+            Ok(PlannedAction {
+                file: file.clone(),
+                rule_name: rule.name.clone(),
+                kind: ActionKind::Trash,
+                destination: None,
+                destination_display,
+                status: ActionStatus::Planned,
+                error: None,
+                trashed_at_unix: None,
+                copy_of,
+            })
+        }
         Action::Move {
             destination,
             by_date,
@@ -181,6 +266,7 @@ fn plan_one(
                 status: ActionStatus::Planned,
                 error: None,
                 trashed_at_unix: None,
+                copy_of,
             })
         }
     }
@@ -196,6 +282,9 @@ pub fn resolve_destination(raw: &str, home: &Path, folder: &Path) -> PathBuf {
 }
 
 /// `YYYY-MM` in the local timezone, from the file's modified time.
+///
+/// `chrono` stays because the standard library cannot convert a timestamp to
+/// local time. The bucket has to follow the machine's timezone, including DST.
 pub fn month_bucket(modified: SystemTime) -> String {
     let Ok(dur) = modified.duration_since(SystemTime::UNIX_EPOCH) else {
         return "1970-01".to_string();
@@ -335,6 +424,7 @@ mod tests {
             vec![],
             &set,
             SystemTime::now(),
+            &DuplicateIndex::empty(),
         )
         .unwrap();
         assert_eq!(plan.actions.len(), 2);
@@ -375,7 +465,16 @@ mod tests {
             file_at(&folder, "notes.txt", b"new", Duration::from_secs(1)),
             file_at(&folder, "notes (1).txt", b"new2", Duration::from_secs(1)),
         ];
-        let plan = plan_entries(&env, &folder, entries, vec![], &set, SystemTime::now()).unwrap();
+        let plan = plan_entries(
+            &env,
+            &folder,
+            entries,
+            vec![],
+            &set,
+            SystemTime::now(),
+            &DuplicateIndex::empty(),
+        )
+        .unwrap();
         let dests: Vec<_> = plan
             .actions
             .iter()
@@ -427,6 +526,7 @@ mod tests {
             }],
             &set,
             SystemTime::now(),
+            &DuplicateIndex::empty(),
         )
         .unwrap();
         assert_eq!(
@@ -456,8 +556,16 @@ mod tests {
             destination = "Archives"
             "#,
         );
-        let plan =
-            plan_entries(&env, &folder, vec![entry], vec![], &set, SystemTime::now()).unwrap();
+        let plan = plan_entries(
+            &env,
+            &folder,
+            vec![entry],
+            vec![],
+            &set,
+            SystemTime::now(),
+            &DuplicateIndex::empty(),
+        )
+        .unwrap();
         assert_eq!(
             plan.actions[0].destination.as_ref().unwrap(),
             &folder.join("Archives/old.zip")

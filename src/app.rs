@@ -8,6 +8,8 @@ use crate::apply::apply_plan;
 use crate::cli::{Cli, Command};
 use crate::env::{contract_home, Env};
 use crate::error::Error;
+use crate::explain;
+use crate::launchd::{self, LaunchPaths};
 use crate::parse::parse_duration;
 use crate::plan::{plan_folder, Plan};
 use crate::report::{self, render_plan};
@@ -22,12 +24,11 @@ use crate::watch;
 pub fn run(cli: Cli) -> Result<u8, Error> {
     let env = Env::from_process()?;
     let trasher = trash::from_env(&env);
-    let color = color_enabled() && !cli.json;
     let macos = cfg!(target_os = "macos");
 
     match cli.command {
         Some(Command::Init { force }) => {
-            init_rules(&env, cli.rules.as_deref(), force, macos)?;
+            init_rules(&env, None, force, macos)?;
             Ok(0)
         }
         Some(Command::Config { init, show, force }) => {
@@ -37,24 +38,71 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
                 ));
             }
             if init {
-                init_rules(&env, cli.rules.as_deref(), force, macos)?;
+                init_rules(&env, None, force, macos)?;
             }
             if show {
-                print_rules(&env, cli.rules.as_deref(), macos, cli.json, color)?;
+                let json = cli.json;
+                print_rules(&env, None, macos, json, color_enabled() && !json)?;
             }
             Ok(0)
         }
-        Some(Command::Rules) => {
-            print_rules(&env, cli.rules.as_deref(), macos, cli.json, color)?;
+        Some(Command::Rules { rules, json }) => {
+            let json = json || cli.json;
+            print_rules(
+                &env,
+                rules.as_deref().or(cli.rules.as_deref()),
+                macos,
+                json,
+                color_enabled() && !json,
+            )?;
             Ok(0)
         }
-        Some(Command::Undo) => undo(&env, trasher.as_ref(), cli.json, color),
-        Some(Command::Watch { path }) => {
+        Some(Command::Undo { json }) => {
+            let json = json || cli.json;
+            undo(&env, trasher.as_ref(), json, color_enabled() && !json)
+        }
+        Some(Command::Explain { file, rules, json }) => {
+            let json = json || cli.json;
+            explain_cmd(
+                &env,
+                &file,
+                rules.as_deref().or(cli.rules.as_deref()),
+                macos,
+                json,
+            )
+        }
+        Some(Command::Watch {
+            path,
+            rules,
+            older_than,
+            install,
+            uninstall,
+            status,
+            print,
+            force,
+            json,
+        }) => {
+            if print || install || uninstall || status || force {
+                return watch_service(
+                    &env,
+                    WatchRequest {
+                        path,
+                        install,
+                        uninstall,
+                        status,
+                        print,
+                        force,
+                        json: json || cli.json,
+                    },
+                );
+            }
             let folder = resolve_folder(&folder_or_default(path, &env))?;
-            let older = parse_older(cli.older_than.as_deref())?;
-            let ruleset = load_rules(&env, cli.rules.as_deref(), macos)?;
+            let older = parse_older(older_than.as_deref().or(cli.older_than.as_deref()))?;
+            let ruleset = load_rules(&env, rules.as_deref().or(cli.rules.as_deref()), macos)?;
             let settle = watch_settle()?;
-            if !cli.json {
+            let json = json || cli.json;
+            let color = color_enabled() && !json;
+            if !json {
                 println!("Watching {}", contract_home(&folder, &env.home));
                 println!("Rules  {}", rules_label(&ruleset));
                 println!(
@@ -62,7 +110,6 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
                     format_settle(settle)
                 );
             }
-            let json = cli.json;
             watch::watch_folder(
                 &env,
                 &folder,
@@ -87,14 +134,15 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
             Ok(0)
         }
         None => {
-            let folder = resolve_folder(&folder_or_default(cli.path, &env))?;
+            let folder = resolve_folder(&folder_or_default(cli.path.clone(), &env))?;
             let older = parse_older(cli.older_than.as_deref())?;
             let ruleset = load_rules(&env, cli.rules.as_deref(), macos)?;
             let mut plan = plan_folder(&env, &folder, &ruleset, older, SystemTime::now())?;
             if cli.apply {
                 apply_plan(&env, &mut plan, trasher.as_ref())?;
             }
-            emit_plan(&plan, &env, cli.json, color)?;
+            let json = cli.json;
+            emit_plan(&plan, &env, json, color_enabled() && !json)?;
             if plan.failure_count() > 0 {
                 Ok(1)
             } else {
@@ -102,6 +150,123 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
             }
         }
     }
+}
+
+fn explain_cmd(
+    env: &Env,
+    file: &Path,
+    rules_path: Option<&Path>,
+    macos: bool,
+    json: bool,
+) -> Result<u8, Error> {
+    let ruleset = load_rules(env, rules_path, macos)?;
+    let explanation = explain::explain_path(env, &ruleset, file, SystemTime::now())?;
+    if json {
+        println!("{}", explain::render_json(&explanation)?);
+    } else {
+        print!(
+            "{}",
+            explain::render(&explanation, env, color_enabled() && !json)
+        );
+    }
+    Ok(0)
+}
+
+struct WatchRequest {
+    path: Option<PathBuf>,
+    install: bool,
+    uninstall: bool,
+    status: bool,
+    print: bool,
+    force: bool,
+    json: bool,
+}
+
+fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
+    let WatchRequest {
+        path,
+        install,
+        uninstall,
+        status,
+        print,
+        force,
+        json,
+    } = request;
+    if print && !install {
+        return Err(Error::msg(
+            "`--print` is only valid with `tidy watch --install --print`",
+        ));
+    }
+    let modes = [install, uninstall, status]
+        .iter()
+        .filter(|flag| **flag)
+        .count();
+    if modes > 1 {
+        return Err(Error::msg(
+            "pass only one of --install, --uninstall, or --status",
+        ));
+    }
+    if force && !install {
+        return Err(Error::msg(
+            "`--force` is only valid with `tidy watch --install`",
+        ));
+    }
+    if !install && !uninstall && !status {
+        return Err(Error::msg(
+            "pass --install, --uninstall, or --status (`tidy watch --help`)",
+        ));
+    }
+
+    if print {
+        let binary = launchd::resolved_tidy_binary()?;
+        let folder = service_folder(path, env)?;
+        let xml = launchd::render_plist(&binary, &folder, &launchd::log_path(&env.home));
+        eprintln!("Using binary {}", binary.display());
+        print!("{xml}");
+        return Ok(0);
+    }
+
+    launchd::ensure_supported()?;
+    let paths = LaunchPaths {
+        home: env.home.clone(),
+        uid: launchd::current_uid()?,
+        launchctl: launchd::launchctl_program(),
+        binary: launchd::resolved_tidy_binary()?,
+    };
+    if install {
+        let folder = service_folder(path, env)?;
+        print!("{}", launchd::install(&paths, &folder, force)?);
+        return Ok(0);
+    }
+    if uninstall {
+        print!("{}", launchd::uninstall(&paths)?);
+        return Ok(0);
+    }
+    let report = launchd::status(&paths)?;
+    if json {
+        println!("{}", launchd::render_status_json(&report)?);
+    } else {
+        print!(
+            "{}",
+            launchd::render_status(&report, color_enabled() && !json)
+        );
+    }
+    Ok(0)
+}
+
+/// Folder embedded in a LaunchAgent. Missing folders are allowed so the agent
+/// can be installed before the directory exists. An existing non-directory fails.
+fn service_folder(path: Option<PathBuf>, env: &Env) -> Result<PathBuf, Error> {
+    let raw = path.unwrap_or_else(|| env.downloads());
+    if raw.exists() {
+        return resolve_folder(&raw);
+    }
+    if raw.is_absolute() {
+        return Ok(raw);
+    }
+    let cwd =
+        std::env::current_dir().map_err(|err| Error::io("reading the working directory", err))?;
+    Ok(cwd.join(raw))
 }
 
 fn init_rules(

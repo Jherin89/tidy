@@ -9,10 +9,14 @@ permissions:
 
 jobs:
   check:
-    name: fmt, clippy, test
-    runs-on: ubuntu-latest
+    name: fmt, clippy, test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.1
         with:
           components: rustfmt, clippy
@@ -21,4 +25,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
+        if: matrix.os == 'ubuntu-latest'
         run: cargo test
+      - name: Test
+        if: matrix.os == 'macos-14'
+        env:
+          # The real-Trash test is a no-op unless this is set. Other tests
+          # point trash at a temp dir via TIDY_FAKE_TRASH.
+          TIDY_CI_REAL_TRASH: "1"
+          # Headless runners often cannot drive Finder's Put Back script.
+          # NSFileManager still moves the file into the Trash. The default
+          # method, when this variable is unset, stays Finder.
+          TIDY_TRASH_METHOD: nsfilemanager
+        run: cargo test
+      - name: Lint the launchd plist
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          cargo build
+          plist="${RUNNER_TEMP}/tidy.plist"
+          ./target/debug/tidy watch --install --print > "${plist}"
+          plutil -lint "${plist}"

@@ -10,12 +10,16 @@
 pub mod app;
 pub mod apply;
 pub mod cli;
+pub mod duplicates;
 pub mod env;
 pub mod error;
+pub mod explain;
+pub mod launchd;
 pub mod logbook;
 pub mod names;
 pub mod parse;
 pub mod plan;
+pub mod privacy;
 pub mod relocate;
 pub mod report;
 pub mod rules;

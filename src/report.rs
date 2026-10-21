@@ -160,6 +160,7 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
                 },
                 "destination": action.destination.as_ref().map(|p| p.display().to_string()),
                 "destination_display": action.destination_display,
+                "copy_of": action.copy_of,
                 "status": match action.status {
                     ActionStatus::Planned => "planned",
                     ActionStatus::Applied => "applied",

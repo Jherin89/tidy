@@ -50,7 +50,7 @@ impl Trasher for SystemTrasher {
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| Error::msg(format!("cannot trash {}", path.display())))?;
         let original_path = path.to_path_buf();
-        trash::delete(path).map_err(|err| {
+        delete_with_system(path).map_err(|err| {
             Error::msg(format!(
                 "could not move {} to the Trash: {err}",
                 original_path.display()
@@ -111,6 +111,29 @@ impl Trasher for FakeTrasher {
         relocate(fake, dest)?;
         Ok(RestoreResult::Restored)
     }
+}
+
+/// Finder is the default on macOS because it supports Put Back.
+/// `TIDY_TRASH_METHOD=nsfilemanager` uses `NSFileManager` instead, which
+/// works on headless runners where Finder's AppleScript often fails. That
+/// path may not offer Put Back. Other values, and other operating systems,
+/// keep the crate default.
+fn delete_with_system(path: &Path) -> Result<(), trash::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var("TIDY_TRASH_METHOD").ok().as_deref() == Some("nsfilemanager") {
+            return delete_with_nsfilemanager(path);
+        }
+    }
+    trash::delete(path)
+}
+
+#[cfg(target_os = "macos")]
+fn delete_with_nsfilemanager(path: &Path) -> Result<(), trash::Error> {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos};
+    let mut ctx = trash::TrashContext::new();
+    ctx.set_delete_method(DeleteMethod::NsFileManager);
+    ctx.delete(path)
 }
 
 pub fn from_env(env: &crate::env::Env) -> Box<dyn Trasher> {

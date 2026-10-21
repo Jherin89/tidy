@@ -371,3 +371,310 @@ fn undo_removes_only_the_empty_directories_apply_created() {
         b"mine"
     );
 }
+
+#[test]
+fn explain_winner_matches_the_plan_for_each_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    fs::create_dir_all(&folder).unwrap();
+    let now = SystemTime::now();
+    let rules = builtin(&env);
+    assert_eq!(rules.rules[0].name, "Duplicates");
+
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-invoice",
+        Duration::from_secs(3 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-invoice",
+        Duration::from_secs(86400),
+    );
+    write_aged(
+        &folder.join("setup.dmg"),
+        b"dmg-old-unique",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(
+        &folder.join("Docker.dmg"),
+        b"dmg-new-unique",
+        Duration::from_secs(5 * 86400),
+    );
+    write_aged(
+        &folder.join("notes.txt"),
+        b"notes-unique",
+        Duration::from_secs(86400),
+    );
+    fs::create_dir_all(env.home.join("Documents/Downloads")).unwrap();
+    fs::write(env.home.join("Documents/Downloads/notes.txt"), b"already").unwrap();
+    write_aged(
+        &folder.join(".secret.pdf"),
+        b"hide",
+        Duration::from_secs(86400),
+    );
+    write_aged(
+        &folder.join("video.mp4.part"),
+        b"partial",
+        Duration::from_secs(86400),
+    );
+    fs::create_dir_all(folder.join("nested")).unwrap();
+
+    let plan = plan_folder(&env, &folder, &rules, None, now).unwrap();
+    for name in [
+        "invoice.pdf",
+        "invoice (1).pdf",
+        "setup.dmg",
+        "Docker.dmg",
+        "notes.txt",
+    ] {
+        let explained = tidy::explain::explain_path(&env, &rules, &folder.join(name), now).unwrap();
+        let planned = plan.actions.iter().find(|action| action.file.name == name);
+        match planned {
+            Some(action) => {
+                assert_eq!(
+                    explained.winner(),
+                    Some(action.rule_name.as_str()),
+                    "{name}"
+                );
+                assert_eq!(
+                    explained.destination(),
+                    Some(action.destination_display.as_str()),
+                    "{name}"
+                );
+            }
+            None => {
+                assert!(
+                    plan.unmatched.iter().any(|file| file.name == name),
+                    "{name} should be unmatched in the plan"
+                );
+                assert_eq!(explained.winner(), None, "{name}");
+                let text = tidy::explain::render(&explained, &env, false);
+                assert!(
+                    text.contains("no rule matches; left in place"),
+                    "{name}: {text}"
+                );
+            }
+        }
+    }
+
+    let extra =
+        tidy::explain::explain_path(&env, &rules, &folder.join("invoice (1).pdf"), now).unwrap();
+    assert_eq!(extra.winner(), Some("Duplicates"));
+    assert_eq!(extra.destination(), Some("Trash (copy of invoice.pdf)"));
+    assert!(extra.rules.iter().any(|rule| {
+        rule.name == "Duplicates"
+            && rule.conditions.iter().any(|condition| {
+                condition.name == "duplicate" && condition.detail.contains("invoice.pdf")
+            })
+    }));
+    assert!(extra
+        .rules
+        .iter()
+        .skip_while(|rule| rule.name != "Duplicates")
+        .skip(1)
+        .all(|rule| rule.mark == tidy::explain::RuleMark::NotEvaluated));
+
+    let keeper =
+        tidy::explain::explain_path(&env, &rules, &folder.join("invoice.pdf"), now).unwrap();
+    assert_eq!(keeper.winner(), Some("PDFs"));
+
+    let notes = tidy::explain::explain_path(&env, &rules, &folder.join("notes.txt"), now).unwrap();
+    assert!(
+        notes.destination().unwrap().contains("notes (1).txt"),
+        "{:?}",
+        notes.destination()
+    );
+
+    let hidden =
+        tidy::explain::explain_path(&env, &rules, &folder.join(".secret.pdf"), now).unwrap();
+    assert!(matches!(
+        hidden.outcome,
+        tidy::explain::Outcome::Skipped { .. }
+    ));
+    assert!(tidy::explain::render(&hidden, &env, false).contains("hidden"));
+
+    let partial =
+        tidy::explain::explain_path(&env, &rules, &folder.join("video.mp4.part"), now).unwrap();
+    assert!(tidy::explain::render(&partial, &env, false).contains("partial"));
+
+    let nested = tidy::explain::explain_path(&env, &rules, &folder.join("nested"), now).unwrap();
+    assert!(tidy::explain::render(&nested, &env, false).contains("directory"));
+
+    let missing = tidy::explain::explain_path(&env, &rules, &folder.join("nope.pdf"), now);
+    assert!(missing.unwrap_err().to_string().contains("file not found"));
+}
+
+#[test]
+fn older_than_keeps_duplicate_groups_from_the_whole_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let now = SystemTime::now();
+    // Oldest file is the keeper. Both of these pass a 30-day filter.
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-bytes",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-bytes",
+        Duration::from_secs(35 * 86400),
+    );
+    // Young extra of a different pair. It is indexed, then left out of the plan.
+    write_aged(
+        &folder.join("notes.txt"),
+        b"note-bytes",
+        Duration::from_secs(50 * 86400),
+    );
+    write_aged(
+        &folder.join("notes (1).txt"),
+        b"note-bytes",
+        Duration::from_secs(86400),
+    );
+    write_aged(
+        &folder.join("fresh.pdf"),
+        b"fresh-unique",
+        Duration::from_secs(86400),
+    );
+
+    let rules = builtin(&env);
+    let min_age = Duration::from_secs(30 * 86400);
+    let view = tidy::plan::view_folder(&folder, Some(min_age), now).unwrap();
+    assert_eq!(
+        view.duplicates.keeper_of(&folder.join("invoice (1).pdf")),
+        Some("invoice.pdf")
+    );
+    assert_eq!(
+        view.duplicates.keeper_of(&folder.join("notes (1).txt")),
+        Some("notes.txt")
+    );
+    assert!(view.duplicates.is_keeper(&folder.join("notes.txt")));
+
+    let plan = plan_folder(&env, &folder, &rules, Some(min_age), now).unwrap();
+    let rule = |name: &str| {
+        plan.actions
+            .iter()
+            .find(|action| action.file.name == name)
+            .unwrap_or_else(|| panic!("{name} was not planned"))
+    };
+    assert_eq!(rule("invoice (1).pdf").rule_name, "Duplicates");
+    assert_eq!(
+        rule("invoice (1).pdf").copy_of.as_deref(),
+        Some("invoice.pdf")
+    );
+    assert_eq!(
+        rule("invoice (1).pdf").destination_display,
+        "Trash (copy of invoice.pdf)"
+    );
+    assert_eq!(rule("invoice.pdf").rule_name, "PDFs");
+    assert_eq!(rule("notes.txt").rule_name, "Documents");
+    assert!(plan
+        .actions
+        .iter()
+        .all(|action| action.file.name != "notes (1).txt"));
+    assert!(plan
+        .actions
+        .iter()
+        .all(|action| action.file.name != "fresh.pdf"));
+    assert!(plan.skipped.iter().any(|skip| {
+        skip.name == "notes (1).txt" && skip.reason == tidy::scan::SkipReason::NewerThanFilter
+    }));
+    assert!(plan.skipped.iter().any(|skip| {
+        skip.name == "fresh.pdf" && skip.reason == tidy::scan::SkipReason::NewerThanFilter
+    }));
+}
+
+#[test]
+fn duplicate_apply_and_undo_round_trip_with_fake_trash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-bytes",
+        Duration::from_secs(3 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-bytes",
+        Duration::from_secs(86400),
+    );
+    let rules = builtin(&env);
+    let mut plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let extra = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice (1).pdf")
+        .unwrap();
+    assert_eq!(extra.rule_name, "Duplicates");
+    assert_eq!(extra.kind, ActionKind::Trash);
+    let keeper = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice.pdf")
+        .unwrap();
+    assert_eq!(keeper.rule_name, "PDFs");
+
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    assert!(!folder.join("invoice (1).pdf").exists());
+    assert!(!folder.join("invoice.pdf").exists());
+    assert!(trash_contains(
+        &env.fake_trash.clone().unwrap(),
+        b"same-bytes"
+    ));
+    assert_eq!(
+        fs::read(env.home.join("Documents/PDFs/invoice.pdf")).unwrap(),
+        b"same-bytes"
+    );
+
+    let report = undo_latest(&env, &trasher).unwrap();
+    assert!(report.fully_undone);
+    assert_eq!(
+        fs::read(folder.join("invoice (1).pdf")).unwrap(),
+        b"same-bytes"
+    );
+    assert_eq!(fs::read(folder.join("invoice.pdf")).unwrap(), b"same-bytes");
+    assert!(!trash_contains(
+        &env.fake_trash.clone().unwrap(),
+        b"same-bytes"
+    ));
+}
+
+#[test]
+fn watch_batch_marks_a_new_copy_of_an_existing_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let now = SystemTime::now();
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-bytes",
+        Duration::from_secs(3 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-bytes",
+        Duration::from_secs(10),
+    );
+    let rules = builtin(&env);
+    let (entries, _) = tidy::scan::scan(&folder, None, now).unwrap();
+    let batch: Vec<_> = entries
+        .into_iter()
+        .filter(|file| file.name == "invoice (1).pdf")
+        .collect();
+    assert_eq!(batch.len(), 1);
+    let plan = tidy::plan::plan_watched(&env, &folder, batch, &rules, now).unwrap();
+    assert_eq!(plan.actions.len(), 1);
+    assert_eq!(plan.actions[0].rule_name, "Duplicates");
+    assert_eq!(plan.actions[0].copy_of.as_deref(), Some("invoice.pdf"));
+    assert_eq!(
+        plan.actions[0].destination_display,
+        "Trash (copy of invoice.pdf)"
+    );
+}

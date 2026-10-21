@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::Error;
 use crate::names::{is_hidden_name, is_partial_name};
+use crate::privacy;
 use crate::rules::is_older_than;
 
 /// A regular file tidy may match against the rules.
@@ -80,7 +81,11 @@ pub fn inspect(
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Inspect::Gone),
         Err(err) => {
-            return Err(Error::io(format!("reading {}", path.display()), err));
+            return Err(privacy::annotate(
+                folder,
+                format!("reading {}", path.display()),
+                err,
+            ));
         }
     };
 
@@ -105,7 +110,8 @@ pub fn inspect(
     }
 
     let modified = meta.modified().map_err(|err| {
-        Error::io(
+        privacy::annotate(
+            folder,
             format!("reading the modified time of {}", path.display()),
             err,
         )
@@ -143,23 +149,25 @@ pub fn scan(
     now: SystemTime,
 ) -> Result<(Vec<FileEntry>, Vec<Skipped>), Error> {
     let reader = fs::read_dir(folder)
-        .map_err(|err| Error::io(format!("reading {}", folder.display()), err))?;
+        .map_err(|err| privacy::annotate(folder, format!("reading {}", folder.display()), err))?;
     let mut entries = Vec::new();
     let mut skipped_entries = Vec::new();
     for item in reader {
-        let item = item.map_err(|err| Error::io(format!("reading {}", folder.display()), err))?;
+        let item = item.map_err(|err| {
+            privacy::annotate(folder, format!("reading {}", folder.display()), err)
+        })?;
         match inspect(folder, &item.path(), older_than, now)? {
             Inspect::Candidate(file) => entries.push(file),
             Inspect::Skip(skip) => skipped_entries.push(skip),
             Inspect::Outside | Inspect::Gone => {}
         }
     }
-    entries.sort_by(|a, b| cmp_name(&a.name, &b.name));
-    skipped_entries.sort_by(|a, b| cmp_name(&a.name, &b.name));
+    entries.sort_by(|a, b| compare_names(&a.name, &b.name));
+    skipped_entries.sort_by(|a, b| compare_names(&a.name, &b.name));
     Ok((entries, skipped_entries))
 }
 
-fn cmp_name(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn compare_names(a: &str, b: &str) -> std::cmp::Ordering {
     a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b))
 }
 
@@ -168,17 +176,37 @@ fn cmp_name(a: &str, b: &str) -> std::cmp::Ordering {
 /// A symlink to a directory is followed (Downloads is sometimes a link).
 /// The returned path is absolute.
 pub fn resolve_folder(path: &Path) -> Result<PathBuf, Error> {
-    if !path.exists() {
-        return Err(Error::NotFound {
-            path: path.to_path_buf(),
-        });
+    // `Path::exists` hides EPERM, which is how macOS Privacy & Security
+    // refuses `~/Downloads`. `metadata` surfaces that error.
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(Error::NotADirectory {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(err) => {
+            return Err(privacy::annotate(
+                path,
+                format!("reading {}", path.display()),
+                err,
+            ));
+        }
     }
-    if !path.is_dir() {
-        return Err(Error::NotADirectory {
-            path: path.to_path_buf(),
-        });
-    }
-    fs::canonicalize(path).map_err(|err| Error::io(format!("resolving {}", path.display()), err))
+    fs::canonicalize(path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Error::NotFound {
+                path: path.to_path_buf(),
+            }
+        } else {
+            privacy::annotate(path, format!("resolving {}", path.display()), err)
+        }
+    })
 }
 
 #[cfg(test)]
