@@ -1,0 +1,289 @@
+//! CLI tests. HOME, config, data, and trash are all pointed at a temp dir.
+
+use std::fs::{self, File};
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+
+fn sandbox() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+fn tidy(root: &Path) -> Command {
+    let home = root.join("home");
+    let config = root.join("config");
+    let data = root.join("data");
+    let trash = root.join("trash");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&config).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    let mut cmd = Command::cargo_bin("tidy").unwrap();
+    cmd.env("HOME", &home)
+        .env("TIDY_HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", &data)
+        .env("TIDY_CONFIG_DIR", &config)
+        .env("TIDY_DATA_DIR", &data)
+        .env("TIDY_FAKE_TRASH", &trash)
+        .env("NO_COLOR", "1")
+        .current_dir(root);
+    cmd
+}
+
+fn downloads(root: &Path) -> std::path::PathBuf {
+    let path = root.join("home/Downloads");
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn write_aged(path: &Path, bytes: &[u8], age: Duration) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, bytes).unwrap();
+    let file = File::options().write(true).open(path).unwrap();
+    file.set_modified(SystemTime::now() - age).unwrap();
+}
+
+#[test]
+fn dry_run_prints_a_table_and_changes_nothing() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(&dir.join("report.pdf"), b"pdf", Duration::from_secs(86_400));
+    write_aged(
+        &dir.join("mystery.bin"),
+        b"bin",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join(".hidden.pdf"),
+        b"hide",
+        Duration::from_secs(86_400),
+    );
+
+    let assert = tidy(tmp.path()).arg(dir.as_os_str()).assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("report.pdf"), "{stdout}");
+    assert!(stdout.contains("PDFs"), "{stdout}");
+    assert!(stdout.contains("mystery.bin"), "{stdout}");
+    assert!(stdout.contains("Dry run"), "{stdout}");
+    assert!(stdout.contains("--apply"), "{stdout}");
+    assert!(dir.join("report.pdf").is_file());
+    assert!(!tmp.path().join("home/Documents/PDFs").exists());
+    assert!(dir.join(".hidden.pdf").is_file());
+}
+
+#[test]
+fn json_dry_run_is_machine_readable() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(&dir.join("report.pdf"), b"pdf", Duration::from_secs(86_400));
+    write_aged(
+        &dir.join("file.crdownload"),
+        b"part",
+        Duration::from_secs(10),
+    );
+
+    let assert = tidy(tmp.path())
+        .args(["--json", dir.to_str().unwrap()])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(value["mode"], "dry-run");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["entries"][0]["file"], "report.pdf");
+    assert_eq!(value["entries"][0]["action"], "move");
+    assert_eq!(value["entries"][0]["status"], "planned");
+    let skipped = value["skipped"].as_array().unwrap();
+    assert!(skipped
+        .iter()
+        .any(|item| item["reason"] == "partial download"));
+}
+
+#[test]
+fn apply_then_undo_restores_the_folder() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("report.pdf"),
+        b"pdf-bytes",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("setup.dmg"),
+        b"old-dmg",
+        Duration::from_secs(40 * 86_400),
+    );
+    write_aged(
+        &dir.join("notes.txt"),
+        b"hello",
+        Duration::from_secs(86_400),
+    );
+    fs::create_dir_all(dir.join("subdir")).unwrap();
+    fs::write(dir.join("subdir/inner.txt"), b"stay").unwrap();
+
+    tidy(tmp.path())
+        .args(["--apply", "--json"])
+        .arg(&dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"mode\": \"applied\""));
+
+    assert!(!dir.join("report.pdf").exists());
+    assert!(!dir.join("setup.dmg").exists());
+    assert!(!dir.join("notes.txt").exists());
+    assert_eq!(
+        fs::read(tmp.path().join("home/Documents/PDFs/report.pdf")).unwrap(),
+        b"pdf-bytes"
+    );
+    assert_eq!(
+        fs::read(tmp.path().join("home/Documents/Downloads/notes.txt")).unwrap(),
+        b"hello"
+    );
+    assert!(trash_has(&tmp.path().join("trash"), b"old-dmg"));
+    assert_eq!(fs::read(dir.join("subdir/inner.txt")).unwrap(), b"stay");
+
+    tidy(tmp.path())
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved back"))
+        .stdout(predicate::str::contains("restored"));
+
+    assert_eq!(fs::read(dir.join("report.pdf")).unwrap(), b"pdf-bytes");
+    assert_eq!(fs::read(dir.join("setup.dmg")).unwrap(), b"old-dmg");
+    assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"hello");
+    assert!(!tmp.path().join("home/Documents/PDFs/report.pdf").exists());
+    assert!(!trash_has(&tmp.path().join("trash"), b"old-dmg"));
+}
+
+#[test]
+fn bad_paths_and_bad_rules_fail_with_a_tidy_prefix() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .arg(tmp.path().join("missing"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::starts_with("tidy: "))
+        .stderr(predicate::str::contains("not found"));
+
+    let file = tmp.path().join("not-a-dir");
+    fs::write(&file, b"x").unwrap();
+    tidy(tmp.path())
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(predicate::str::starts_with("tidy: "))
+        .stderr(predicate::str::contains("not a directory"));
+
+    let rules = tmp.path().join("broken.toml");
+    fs::write(&rules, "[[rules]\n").unwrap();
+    tidy(tmp.path())
+        .args(["--rules"])
+        .arg(&rules)
+        .arg(downloads(tmp.path()))
+        .assert()
+        .failure()
+        .stderr(predicate::str::starts_with("tidy: "))
+        .stderr(predicate::str::contains("invalid rules file"));
+
+    tidy(tmp.path())
+        .args(["--older-than", "nope"])
+        .arg(downloads(tmp.path()))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--older-than"));
+}
+
+#[test]
+fn init_refuses_to_overwrite_unless_forced_and_rules_shows_the_source() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .arg("rules")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("built-in defaults"))
+        .stdout(predicate::str::contains("Old installers"));
+
+    tidy(tmp.path()).args(["init"]).assert().success();
+    let rules = tmp.path().join("config/tidy/rules.toml");
+    assert!(rules.is_file());
+    let text = fs::read_to_string(&rules).unwrap();
+    assert!(text.contains("[[rules]]"));
+    assert!(text.contains("Screenshots"));
+
+    tidy(tmp.path())
+        .args(["init"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+
+    tidy(tmp.path())
+        .args(["config", "--init", "--force", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Rules source:"))
+        .stdout(predicate::str::contains("rules.toml"));
+
+    tidy(tmp.path())
+        .args(["rules", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"source\": \"file\""));
+}
+
+#[test]
+fn older_than_flag_filters_before_rules() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("old.pdf"),
+        b"old",
+        Duration::from_secs(10 * 86_400),
+    );
+    write_aged(&dir.join("new.pdf"), b"new", Duration::from_secs(86_400));
+
+    let assert = tidy(tmp.path())
+        .args(["--json", "--older-than", "7d"])
+        .arg(&dir)
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let files: Vec<_> = value["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["file"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(files, vec!["old.pdf".to_string()]);
+    assert!(value["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file"] == "new.pdf"));
+}
+
+fn trash_has(dir: &Path, bytes: &[u8]) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let Ok(reader) = fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in reader.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                stack.push(child);
+            } else if fs::read(&child).ok().as_deref() == Some(bytes) {
+                return true;
+            }
+        }
+    }
+    false
+}

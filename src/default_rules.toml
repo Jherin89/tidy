@@ -1,0 +1,127 @@
+# tidy rules
+# ----------
+# tidy reads this file when deciding what to do with the loose files in a
+# folder (by default, your Downloads folder). Only top-level files are
+# considered. Hidden files, folders, symlinks, and partial downloads
+# (.crdownload, .part, .download, .tmp, .partial) are always skipped.
+#
+# Rules run from top to bottom. The first rule whose conditions all match
+# wins. A file that matches nothing is left where it is.
+#
+# Conditions — every condition you set must match. Omit a condition to ignore
+# it. A rule needs at least one condition.
+#
+#   extensions     Case-insensitive list. The extension is the text after the
+#                  last dot, so "Report.PDF" matches "pdf". A compound value
+#                  such as "tar.gz" matches when the file name ends with it.
+#   glob           File-name glob (globset syntax), case-insensitive. A list
+#                  matches if any one pattern matches. Example: "Screenshot*"
+#   older_than     Modified time is at least this old. Units: s, m, h, d, w
+#                  (seconds, minutes, hours, days, weeks). "m" is minutes,
+#                  not months. Examples: "30d", "12h", "2w"
+#   larger_than    Size is at least this big. Decimal units (KB, MB, GB, TB)
+#                  use powers of 1000. Binary units (KiB, MiB, GiB, TiB) use
+#                  powers of 1024. Examples: "100MB", "500KB", "1GiB"
+#   smaller_than   Size is at most this big. Same units as larger_than.
+#
+# Comparisons on size and age are inclusive.
+#
+# Actions
+#   action = "move"
+#   destination = "~/Documents/PDFs"
+#       "~" is your home directory. A relative destination is resolved inside
+#       the folder being tidied. Missing folders are created when you --apply.
+#   by_date = true
+#       Optional. Puts the file in a YYYY-MM subfolder of destination, using
+#       the file's modified time in the local timezone.
+#   action = "trash"
+#       Sends the file to the system Trash. tidy never permanently deletes.
+#
+# Name collisions never overwrite. tidy inserts " (1)", " (2)", … before the
+# extension (and before a trailing .tar.gz / .tar.bz2 / .tar.xz / .tar.zst).
+#
+# Preview with `tidy`. Perform the plan with `tidy --apply`.
+# `tidy rules` prints the rules that are actually in effect.
+
+# Screenshots are listed before the general image rule so they win.
+[[rules]]
+name = "Screenshots"
+glob = ["Screenshot*", "Screen Shot*"]
+extensions = ["png", "jpg", "jpeg", "webp"]
+action = "move"
+destination = "~/Pictures/Screenshots"
+by_date = true
+
+# Installers that have been sitting around for a month are rarely needed.
+# A newer installer matches nothing here and stays in the folder.
+[[rules]]
+name = "Old installers"
+extensions = ["dmg", "pkg", "exe", "msi", "deb", "rpm", "AppImage", "iso"]
+older_than = "30d"
+action = "trash"
+
+[[rules]]
+name = "PDFs"
+extensions = ["pdf"]
+action = "move"
+destination = "~/Documents/PDFs"
+
+[[rules]]
+name = "Images"
+extensions = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp", "svg"]
+action = "move"
+destination = "~/Pictures/Downloads"
+
+[[rules]]
+name = "Videos"
+extensions = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv"]
+action = "move"
+destination = "~/Movies/Downloads"
+
+[[rules]]
+name = "Audio"
+extensions = ["mp3", "wav", "flac", "aac", "m4a", "ogg", "wma", "aiff"]
+action = "move"
+destination = "~/Music/Downloads"
+
+# Spreadsheets are listed before documents so .csv is not treated as prose.
+[[rules]]
+name = "Spreadsheets"
+extensions = ["xls", "xlsx", "csv", "ods", "numbers", "tsv"]
+action = "move"
+destination = "~/Documents/Spreadsheets"
+
+[[rules]]
+name = "Documents"
+extensions = ["doc", "docx", "txt", "rtf", "odt", "md", "pages", "ppt", "pptx", "key", "odp"]
+action = "move"
+destination = "~/Documents/Downloads"
+
+# Recent archives stay put so you can still unpack what you just downloaded.
+[[rules]]
+name = "Old archives"
+extensions = ["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "tar.gz", "tar.bz2", "tar.xz"]
+older_than = "14d"
+action = "move"
+destination = "~/Downloads/Archives"
+
+[[rules]]
+name = "Ebooks"
+extensions = ["epub", "mobi", "azw", "azw3"]
+action = "move"
+destination = "~/Documents/Books"
+
+# More ideas — uncomment and edit to taste.
+#
+# [[rules]]
+# name = "Huge old files"
+# larger_than = "2GB"
+# older_than = "7d"
+# action = "trash"
+#
+# [[rules]]
+# name = "Small logs"
+# glob = "*.log"
+# smaller_than = "5MB"
+# older_than = "14d"
+# action = "trash"

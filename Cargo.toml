@@ -1,0 +1,42 @@
+[package]
+name = "tidy-dl"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Jordan Herin"]
+description = "Rules-driven cleanup for a messy Downloads folder"
+license = "MIT"
+repository = "https://github.com/Jherin89/tidy"
+homepage = "https://github.com/Jherin89/tidy"
+readme = "README.md"
+keywords = ["downloads", "cleanup", "organizer", "cli", "trash"]
+categories = ["command-line-utilities"]
+exclude = ["/.github", "/docs/demo.gif"]
+
+[[bin]]
+name = "tidy"
+path = "src/main.rs"
+
+[lib]
+name = "tidy"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { version = "=0.4.39", default-features = false, features = ["clock", "std"] }
+clap = { version = "=4.5.40", features = ["derive"] }
+ctrlc = "=3.4.5"
+dirs = "=5.0.1"
+globset = "=0.4.15"
+notify-debouncer-mini = "=0.4.1"
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+thiserror = "=1.0.69"
+toml = "=0.8.23"
+trash = "=5.2.9"
+unicode-width = "=0.2.0"
+
+[dev-dependencies]
+assert_cmd = "=2.0.16"
+predicates = "=3.1.2"
+serde_json = "=1.0.138"
+tempfile = "=3.15.0"
