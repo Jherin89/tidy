@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" alt="tidy demo: preview the plan, apply it, then undo it" width="100%">
+  <img src="docs/demo.gif" alt="tidy demo: preview the plan, explain a duplicate, apply it, then undo it" width="100%">
 </p>
 
 ```bash
@@ -90,14 +90,23 @@ tidy is built so that the worst outcome of a bad rule is a few files in the wron
 
 You don't need to know Rust to use tidy. Pick **Homebrew**, a **release archive**, or **build it yourself**.
 
-### Option A: Homebrew
+### Option A: Homebrew (recommended)
 
-```bash
-brew install jherin89/tap/tidy
-tidy --version
-```
+Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles updates, and it doesn't need the quarantine step that a browser download does.
 
-The formula installs the universal macOS binary, or the static musl binary on Linux.
+1. **Open Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type *Terminal*, press <kbd>Return</kbd>).
+2. **Make sure Homebrew is installed.** Run `brew --version`. If you get `command not found`, install it with the one-line command from [brew.sh](https://brew.sh), then follow the "Next steps" it prints (they add `brew` to your PATH) and open a new Terminal window.
+3. **Install tidy:**
+   ```bash
+   brew install jherin89/tap/tidy
+   ```
+   This adds the [jherin89/tap](https://github.com/Jherin89/homebrew-tap) tap and installs the prebuilt binary: universal on macOS, static musl on Linux. Each download is checked against a pinned SHA-256.
+4. **Verify it works:**
+   ```bash
+   tidy --version     # → tidy 0.2.0
+   tidy               # safe: only shows a preview of ~/Downloads
+   ```
+5. **Later:** `brew upgrade tidy` updates it, and `brew uninstall tidy` removes it. If you set up the background watcher, run `tidy watch --uninstall` first.
 
 ### Option B: download a release archive
 
@@ -178,13 +187,14 @@ An excerpt of the run in the screenshot above:
 file                                     rule            action  destination                                                             size
 ───────────────────────────────────────  ──────────────  ──────  ──────────────────────────────────────────────────────────────────────  ──────
 IMG_4821.HEIC                            Images          move    ~/Pictures/Downloads/IMG_4821.HEIC                                      2.4 MB
+invoice-2026-03 (1).pdf                  Duplicates      trash   Trash (copy of invoice-2026-03.pdf)                                     188 KB
 invoice-2026-03.pdf                      PDFs            move    ~/Documents/PDFs/invoice-2026-03.pdf                                    188 KB
 Q3-pipeline-forecast.xlsx                Spreadsheets    move    ~/Documents/Spreadsheets/Q3-pipeline-forecast.xlsx                      349 KB
 Screenshot 2026-10-01 at 9.14.22 AM.png  Screenshots     move    ~/Pictures/Screenshots/2026-10/Screenshot 2026-10-01 at 9.14.22 AM.png  500 KB
 zoom-installer.pkg                       Old installers  trash   Trash                                                                   49 MB
 
 Summary
-  matched      18   386 MB
+  matched      19   386 MB
   unmatched     3   left in place
   skipped       3
 ...
@@ -206,7 +216,7 @@ Re-run with --apply to perform these actions.
 - **destination**: where it will go. `~` means your home folder. If a file with that name is already there, you'll see a ` (1)` suffix.
 - **Unmatched** files match no rule and stay where they are. In the example, `Docker.dmg` is an installer but it's only 5 days old, so the 30-day "Old installers" rule doesn't apply yet.
 - **Skipped** files are never touched: hidden files, folders, symlinks, and downloads still in progress.
-- **Duplicate copies** (0.2) show a destination like `Trash (copy of invoice-2026-03.pdf)`. The screenshot above is the 0.1 recording. The demo folder script now also drops an exact copy, `invoice-2026-03 (1).pdf`, which the first built-in rule trashes. The older original stays and is filed by the PDF rule. Ask `tidy explain` if you want the condition-by-condition trace.
+- **Duplicate copies** (new in 0.2) show a destination like `Trash (copy of invoice-2026-03.pdf)`. The extra copy goes to the Trash. The original (the oldest copy) stays put and is filed by its normal rule, here **PDFs**.
 
 ### 3. Apply it
 
@@ -215,7 +225,7 @@ tidy --apply
 ```
 
 ```text
-Applied 18 actions (386 MB).
+Applied 19 actions (386 MB).
 Undo log  ~/Library/Application Support/tidy/logs/run-20261021T155316096822Z.json
 Run `tidy undo` to reverse this run.
 ```
@@ -326,7 +336,7 @@ systemctl --user enable --now tidy.service
 
 Adjust `ExecStart` if `tidy` lives somewhere else (`which tidy`).
 
-### 10. Ask why one file matched: `tidy explain`
+### 10. Ask why one file matched: `tidy explain` (new in 0.2)
 
 ```bash
 tidy explain ~/Downloads/invoice-2026-03\ \(1\).pdf
@@ -334,6 +344,8 @@ tidy explain ~/Downloads/Docker.dmg
 tidy explain --json ~/Downloads/report.pdf
 tidy explain --rules ./rules.toml ~/Downloads/report.pdf
 ```
+
+<p align="center"><img src="docs/explain.png" alt="tidy explain output: Old installers wins because the .pkg is 95 days old" width="100%"></p>
 
 Read-only. tidy evaluates the file as if it were tidying that file's parent folder, using the same matcher as the plan. It first says if the file would be skipped (hidden, partial download, directory, symlink, missing). Otherwise it prints every condition of each rule with pass or fail, including the real age (`5d 3h old, needs ≥ 30d`) and, for a duplicate, which file is kept. The first matching rule wins. Later rules are marked "not evaluated". The outcome is the winning rule, action, and destination (with the same collision suffix the plan would choose), or `no rule matches; left in place`. Exit 0 when the file was evaluated, whether or not a rule matched. A missing file or a bad rules file exits nonzero.
 
@@ -560,7 +572,7 @@ cargo test
 - CI runs fmt, clippy, and tests on Ubuntu and macOS 14. The macOS job lints `tidy watch --install --print` with `plutil` and runs a real-Trash test only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
 - Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`), attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists.
 - To refresh the Homebrew formula in a local tap clone: `scripts/bump-homebrew.sh /path/to/homebrew-tap` (downloads checksums with your `gh` login; add `--commit` to commit, and `--push` to push). `--dry-run` or `--sha-from-dir` renders the formula without a release.
-- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`.
+- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (also `dry-run.tape`, `explain.tape`, `undo.tape`) (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`.
 
 ## License
 

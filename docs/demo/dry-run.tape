@@ -1,6 +1,6 @@
 Output "/tmp/tidy-dry-run.gif"
 Set Width 1560
-Set Height 1600
+Set Height 1900
 Source "docs/demo/common.tape"
 Type "tidy"
 Enter
