@@ -32,9 +32,23 @@ jobs:
           cp LICENSE README.md "${stage}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+      - name: Smoke test
+        run: |
+          ./target/aarch64-apple-darwin/release/tidy --version
+          mkdir -p "$RUNNER_TEMP/dl"
+          ./target/aarch64-apple-darwin/release/tidy "$RUNNER_TEMP/dl"
+      - name: Release notes
+        id: notes
+        shell: bash
+        run: |
+          f="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; fi
       - name: Attach archive
         uses: softprops/action-gh-release@v2
         with:
+          name: tidy ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: |
             dist/*.tar.gz
             dist/*.sha256

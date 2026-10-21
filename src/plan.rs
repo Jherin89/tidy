@@ -46,6 +46,9 @@ pub struct PlannedAction {
 
 #[derive(Debug, Clone)]
 pub struct Plan {
+    /// Directories that `--apply` had to create, outermost first. Undo removes
+    /// them again if they are empty.
+    pub created_dirs: Vec<PathBuf>,
     pub folder: PathBuf,
     pub rules_source_label: String,
     pub rules_path: Option<PathBuf>,
@@ -121,6 +124,7 @@ pub fn plan_entries(
     };
 
     Ok(Plan {
+        created_dirs: Vec::new(),
         folder: folder.to_path_buf(),
         rules_source_label,
         rules_path: rules.path.clone(),

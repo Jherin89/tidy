@@ -335,3 +335,39 @@ fn walk_files(dir: &Path) -> impl Iterator<Item = PathBuf> {
     collect(dir, &mut out);
     out.into_iter()
 }
+
+#[test]
+fn undo_removes_only_the_empty_directories_apply_created() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    // Pre-existing (empty) destination parent: must survive undo.
+    let pictures = env.home.join("Pictures");
+    fs::create_dir_all(&pictures).unwrap();
+    write_aged(&folder.join("a.pdf"), b"pdf", Duration::from_secs(10));
+    write_aged(&folder.join("b.png"), b"png", Duration::from_secs(10));
+    write_aged(&folder.join("c.txt"), b"txt", Duration::from_secs(10));
+
+    let rules = builtin(&env);
+    let mut plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    assert!(env.home.join("Documents/PDFs/a.pdf").exists());
+    assert!(env.home.join("Pictures/Downloads/b.png").exists());
+
+    // Something the user drops into a created folder afterwards is kept.
+    fs::write(env.home.join("Documents/Downloads/mine.txt"), b"mine").unwrap();
+
+    let report = undo_latest(&env, &trasher).unwrap();
+    assert_eq!(report.failure_count(), 0);
+    assert!(folder.join("a.pdf").exists());
+    assert!(!env.home.join("Documents/PDFs").exists());
+    assert!(!env.home.join("Pictures/Downloads").exists());
+    assert!(pictures.is_dir(), "pre-existing directory must be kept");
+    assert_eq!(
+        fs::read(env.home.join("Documents/Downloads/mine.txt")).unwrap(),
+        b"mine"
+    );
+}

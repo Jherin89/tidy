@@ -212,6 +212,10 @@ fn watch_settle() -> Result<Duration, Error> {
 }
 
 fn color_enabled() -> bool {
+    // https://bixense.com/clicolors/ : CLICOLOR_FORCE wins, even when piped.
+    if std::env::var("CLICOLOR_FORCE").is_ok_and(|v| !v.is_empty() && v != "0") {
+        return true;
+    }
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }

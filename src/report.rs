@@ -1,6 +1,7 @@
 //! Text tables and JSON for plans and undo reports.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -39,10 +40,11 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
     if !plan.unmatched.is_empty() {
         out.push('\n');
         line(&mut out, &dye("Unmatched  (left in place)", color, "1"));
+        let col = list_width(plan.unmatched.iter().take(20).map(|f| f.name.as_str()));
         for file in plan.unmatched.iter().take(20) {
             line(
                 &mut out,
-                &format!("  {:<24} {}", file.name, format_size(file.size)),
+                &format!("  {} {}", pad(&file.name, col), format_size(file.size)),
             );
         }
         if plan.unmatched.len() > 20 {
@@ -56,14 +58,20 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
     if !plan.skipped.is_empty() {
         out.push('\n');
         line(&mut out, &dye("Skipped", color, "1"));
-        for skip in plan.skipped.iter().take(20) {
-            let name = match skip.reason {
+        let names: Vec<String> = plan
+            .skipped
+            .iter()
+            .take(20)
+            .map(|skip| match skip.reason {
                 SkipReason::Directory => format!("{}/", skip.name),
                 _ => skip.name.clone(),
-            };
+            })
+            .collect();
+        let col = list_width(names.iter().map(String::as_str));
+        for (skip, name) in plan.skipped.iter().zip(&names) {
             line(
                 &mut out,
-                &format!("  {:<24} {}", name, skip.reason.as_str()),
+                &format!("  {} {}", pad(name, col), skip.reason.as_str()),
             );
         }
         if plan.skipped.len() > 20 {
@@ -125,7 +133,10 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
                 );
             }
             if let Some(path) = &plan.log_path {
-                line(&mut out, &format!("Undo log  {}", path.display()));
+                line(
+                    &mut out,
+                    &format!("Undo log  {}", contract_home(path, &env.home)),
+                );
                 line(&mut out, "Run `tidy undo` to reverse this run.");
             }
         }
@@ -236,15 +247,37 @@ pub fn render_undo(report: &UndoReport, env: &Env, color: bool) -> String {
             done
         ),
     );
+    let col = list_width(report.items.iter().map(|item| item.file_name.as_str()));
     for item in &report.items {
-        let label = match item.outcome {
-            UndoOutcome::MovedBack => dye("moved back", color, "32"),
-            UndoOutcome::Restored => dye("restored", color, "32"),
-            UndoOutcome::Manual => dye("manual", color, "33"),
-            UndoOutcome::Failed => dye("failed", color, "33"),
+        let (text, code) = match item.outcome {
+            UndoOutcome::MovedBack => ("moved back", "32"),
+            UndoOutcome::Restored => ("restored", "32"),
+            UndoOutcome::Manual => ("manual", "33"),
+            UndoOutcome::Failed => ("failed", "33"),
         };
-        line(&mut out, &format!("  {:<24} {}", item.file_name, label));
-        line(&mut out, &format!("    {}", item.message));
+        let label = dye(&pad(text, 10), color, code);
+        match item.outcome {
+            UndoOutcome::MovedBack | UndoOutcome::Restored => line(
+                &mut out,
+                &format!(
+                    "  {} {}  {}",
+                    pad(&item.file_name, col),
+                    label,
+                    dye(
+                        &format!("→ {}", contract_home(Path::new(&item.path), &env.home)),
+                        color,
+                        "2"
+                    )
+                ),
+            ),
+            _ => {
+                line(
+                    &mut out,
+                    &format!("  {} {}", pad(&item.file_name, col), label),
+                );
+                line(&mut out, &format!("    {}", item.message));
+            }
+        }
     }
     out.push('\n');
     if report.manual_count() > 0 {
@@ -260,7 +293,10 @@ pub fn render_undo(report: &UndoReport, env: &Env, color: bool) -> String {
     if report.fully_undone {
         line(
             &mut out,
-            &format!("Log marked undone: {}", report.log_path.display()),
+            &format!(
+                "Log marked undone: {}",
+                contract_home(&report.log_path, &env.home)
+            ),
         );
     } else {
         line(
@@ -494,6 +530,11 @@ fn pad(text: &str, target: usize) -> String {
     } else {
         format!("{text}{}", " ".repeat(target - current))
     }
+}
+
+/// Column width for a simple two-column list: the widest name, at least 24, at most 48.
+fn list_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names.map(width).max().unwrap_or(0).clamp(24, 48)
 }
 
 fn width(text: &str) -> usize {

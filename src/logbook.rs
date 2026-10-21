@@ -29,6 +29,9 @@ pub struct RunLog {
     pub entries: Vec<LogEntry>,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Directories this run created. Undo removes them again when empty.
+    #[serde(default)]
+    pub created_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +84,7 @@ pub fn write_run_log(env: &Env, plan: &Plan) -> Result<Option<PathBuf>, Error> {
         undone_at: None,
         entries,
         notes: Vec::new(),
+        created_dirs: plan.created_dirs.clone(),
     };
     save_log(&path, &log)?;
     Ok(Some(path))
@@ -171,6 +175,7 @@ mod tests {
         let env = env_at(tmp.path());
         let folder = env.home.join("Downloads");
         let mut plan = Plan {
+            created_dirs: vec![],
             folder: folder.clone(),
             rules_source_label: "test".into(),
             rules_path: None,

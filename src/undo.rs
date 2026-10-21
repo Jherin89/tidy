@@ -75,6 +75,7 @@ pub fn undo_latest(env: &Env, trasher: &dyn Trasher) -> Result<UndoReport, Error
     }
     log.undone = log.entries.iter().all(|entry| entry.reversed);
     if log.undone {
+        remove_empty_created_dirs(&log.created_dirs);
         log.undone_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
     }
     logbook::save_log(&path, &log)?;
@@ -85,6 +86,15 @@ pub fn undo_latest(env: &Env, trasher: &dyn Trasher) -> Result<UndoReport, Error
         items,
         fully_undone: log.undone,
     })
+}
+
+/// Remove directories the run created, innermost first, but only when they
+/// are empty again. `remove_dir` refuses non-empty directories, so nothing
+/// the user put there afterwards can be lost.
+fn remove_empty_created_dirs(dirs: &[std::path::PathBuf]) {
+    for dir in dirs.iter().rev() {
+        let _ = fs::remove_dir(dir);
+    }
 }
 
 fn reverse_entry(
