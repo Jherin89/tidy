@@ -1,21 +1,27 @@
 class Tidy < Formula
   desc "Rules-driven cleanup for a messy Downloads folder"
   homepage "https://github.com/Jherin89/tidy"
-  version "__VERSION__"
   license "MIT"
 
+  # One universal (arm64 + x86_64) archive serves both Mac architectures.
   on_macos do
-    url "https://github.com/Jherin89/tidy/releases/download/v#{version}/tidy-#{version}-universal-apple-darwin.tar.gz"
-    sha256 "__SHA_MACOS__"
+    on_arm do
+      url "https://github.com/Jherin89/tidy/releases/download/v__VERSION__/tidy-__VERSION__-universal-apple-darwin.tar.gz"
+      sha256 "__SHA_MACOS__"
+    end
+    on_intel do
+      url "https://github.com/Jherin89/tidy/releases/download/v__VERSION__/tidy-__VERSION__-universal-apple-darwin.tar.gz"
+      sha256 "__SHA_MACOS__"
+    end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/Jherin89/tidy/releases/download/v#{version}/tidy-#{version}-x86_64-unknown-linux-musl.tar.gz"
+      url "https://github.com/Jherin89/tidy/releases/download/v__VERSION__/tidy-__VERSION__-x86_64-unknown-linux-musl.tar.gz"
       sha256 "__SHA_LINUX_INTEL__"
     end
     on_arm do
-      url "https://github.com/Jherin89/tidy/releases/download/v#{version}/tidy-#{version}-aarch64-unknown-linux-musl.tar.gz"
+      url "https://github.com/Jherin89/tidy/releases/download/v__VERSION__/tidy-__VERSION__-aarch64-unknown-linux-musl.tar.gz"
       sha256 "__SHA_LINUX_ARM__"
     end
   end
@@ -28,6 +34,6 @@ class Tidy < Formula
     assert_match version.to_s, shell_output("#{bin}/tidy --version")
     inbox = testpath/"inbox"
     inbox.mkpath
-    system bin/"tidy", inbox
+    assert_match "Nothing to do", shell_output("#{bin}/tidy #{inbox}")
   end
 end
