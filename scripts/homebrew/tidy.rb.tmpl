@@ -26,6 +26,8 @@ class Tidy < Formula
     end
   end
 
+  conflicts_with "tidy-html5", because: "both install a `tidy` binary"
+
   def install
     bin.install "tidy"
   end

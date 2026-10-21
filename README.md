@@ -505,6 +505,11 @@ Exit codes: `0` on success, including an explain that matches nothing. `1` on er
 
 ## FAQ and troubleshooting
 
+<details><summary><b><code>brew install</code> says tidy conflicts with <code>tidy-html5</code>, or <code>tidy --version</code> prints "HTML Tidy"</b></summary>
+
+Homebrew's `tidy-html5` formula and macOS's own `/usr/bin/tidy` are HTML Tidy, an unrelated program with the same command name. Run `brew unlink tidy-html5` (or `brew uninstall tidy-html5`), then `brew install jherin89/tap/tidy`. Homebrew's `bin` folder comes before `/usr/bin` on your PATH, so `tidy` then runs this tool. Check with `which tidy`.
+</details>
+
 <details><summary><b>"tidy" cannot be opened because the developer cannot be verified</b></summary>
 
 The binary isn't notarized. Run `xattr -d com.apple.quarantine "$(which tidy)"`, or go to **System Settings → Privacy & Security** and click **Open Anyway**.
