@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 
-# Linux archives are statically linked musl builds (x86_64 on ubuntu-latest,
+# Linux archives are statically linked musl builds (x86_64 on ubuntu-24.04,
 # aarch64 native on ubuntu-24.04-arm). The dependency tree does not need
 # OpenSSL. If a future crate cannot link against musl, switch that job to the
 # gnu target and update the archive name, scripts/bump-homebrew.sh, and the
@@ -55,7 +55,7 @@ jobs:
 
   linux-x86_64:
     name: x86_64-unknown-linux-musl
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.1
@@ -116,7 +116,7 @@ jobs:
   release:
     name: GitHub release
     needs: [macos-universal, linux-x86_64, linux-aarch64]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
