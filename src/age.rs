@@ -139,7 +139,7 @@ fn macos_date_added(path: &Path) -> Option<SystemTime> {
             std::ptr::addr_of_mut!(attrlist).cast(),
             buf.as_mut_ptr().cast(),
             buf.len(),
-            libc::FSOPT_NOFOLLOW as libc::c_ulong,
+            libc::FSOPT_NOFOLLOW,
         )
     };
     if rc != 0 {
