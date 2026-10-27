@@ -7,7 +7,7 @@
 #
 # Usage:
 #   scripts/bump-homebrew.sh /path/to/homebrew-tap
-#   scripts/bump-homebrew.sh --version 0.2.0 /path/to/homebrew-tap
+#   scripts/bump-homebrew.sh --version 0.3.0 /path/to/homebrew-tap
 #   scripts/bump-homebrew.sh --sha-from-dir /tmp/shas /tmp/tap
 #   scripts/bump-homebrew.sh --dry-run /tmp/tap
 #   scripts/bump-homebrew.sh --commit /path/to/homebrew-tap

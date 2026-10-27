@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
+use crate::age::{AgeProbe, SystemAge};
 use crate::duplicates::DuplicateIndex;
 use crate::env::{contract_home, expand_tilde, Env};
 use crate::error::Error;
@@ -99,12 +100,22 @@ pub fn view_folder(
     older_than: Option<std::time::Duration>,
     now: SystemTime,
 ) -> Result<FolderView, Error> {
-    let (all_entries, mut skipped) = scan::scan(folder, None, now)?;
+    view_folder_with(folder, older_than, now, &[], &SystemAge)
+}
+
+pub fn view_folder_with(
+    folder: &Path,
+    older_than: Option<std::time::Duration>,
+    now: SystemTime,
+    bundle_exts: &[String],
+    ages: &dyn AgeProbe,
+) -> Result<FolderView, Error> {
+    let (all_entries, mut skipped) = scan::scan_with(folder, None, now, bundle_exts, ages)?;
     let duplicates = DuplicateIndex::build(folder, &all_entries)?;
     let entries = if let Some(min_age) = older_than {
         let mut kept = Vec::new();
         for file in all_entries {
-            if is_older_than(file.modified, now, min_age) {
+            if is_older_than(file.age, now, min_age) {
                 kept.push(file);
             } else {
                 skipped.push(Skipped {
@@ -134,7 +145,19 @@ pub fn plan_folder(
     older_than: Option<std::time::Duration>,
     now: SystemTime,
 ) -> Result<Plan, Error> {
-    let view = view_folder(folder, older_than, now)?;
+    plan_folder_with(env, folder, rules, older_than, now, &SystemAge)
+}
+
+pub fn plan_folder_with(
+    env: &Env,
+    folder: &Path,
+    rules: &Ruleset,
+    older_than: Option<std::time::Duration>,
+    now: SystemTime,
+    ages: &dyn AgeProbe,
+) -> Result<Plan, Error> {
+    let bundles = rules.bundle_extensions();
+    let view = view_folder_with(folder, older_than, now, &bundles, ages)?;
     plan_entries(
         env,
         folder,
@@ -155,7 +178,7 @@ pub fn plan_watched(
     rules: &Ruleset,
     now: SystemTime,
 ) -> Result<Plan, Error> {
-    let duplicates = DuplicateIndex::for_folder(folder, now)?;
+    let duplicates = DuplicateIndex::for_folder(folder, now, &rules.bundle_extensions())?;
     plan_entries(env, folder, entries, Vec::new(), rules, now, &duplicates)
 }
 
@@ -343,6 +366,17 @@ pub fn inspect_one(
     inspect(folder, path, older_than, now)
 }
 
+pub fn inspect_one_with(
+    folder: &Path,
+    path: &Path,
+    older_than: Option<std::time::Duration>,
+    now: SystemTime,
+    bundle_exts: &[String],
+    ages: &dyn AgeProbe,
+) -> Result<Inspect, Error> {
+    scan::inspect_with(folder, path, older_than, now, bundle_exts, ages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,12 +411,7 @@ mod tests {
         let modified = now - age;
         let file = fs::File::options().write(true).open(&path).unwrap();
         file.set_modified(modified).unwrap();
-        FileEntry {
-            path,
-            name: name.to_string(),
-            size: bytes.len() as u64,
-            modified,
-        }
+        FileEntry::new(path, name, bytes.len() as u64, modified)
     }
 
     #[test]

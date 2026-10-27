@@ -14,12 +14,48 @@ use crate::error::Error;
 
 pub const LABEL: &str = "com.github.jherin89.tidy";
 
+/// Launchd label. `TIDY_LAUNCHD_LABEL` overrides the default so a smoke
+/// test can install a throwaway agent without touching the real one.
+pub fn job_label() -> Result<String, Error> {
+    match std::env::var("TIDY_LAUNCHD_LABEL") {
+        Ok(value) if !value.is_empty() => validate_label(&value),
+        _ => Ok(LABEL.to_string()),
+    }
+}
+
+fn validate_label(label: &str) -> Result<String, Error> {
+    let ok = label.len() <= 64
+        && label
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    if ok {
+        Ok(label.to_string())
+    } else {
+        Err(Error::msg(format!(
+            "TIDY_LAUNCHD_LABEL `{label}` is not a valid launchd label (letters, digits, '.', '-', '_'; max 64)"
+        )))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchPaths {
     pub home: PathBuf,
     pub uid: u32,
     pub launchctl: PathBuf,
     pub binary: PathBuf,
+    pub label: String,
+}
+
+/// Arguments stored in the agent's ProgramArguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchProgram {
+    pub folder: PathBuf,
+    pub rules: Option<PathBuf>,
+    pub older_than: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,15 +72,22 @@ pub struct LaunchStatus {
     pub plist_exists: bool,
     pub binary: Option<String>,
     pub folder: Option<String>,
+    pub rules: Option<String>,
+    pub older_than: Option<String>,
+    pub arguments: Vec<String>,
     pub job: JobInfo,
     pub log_path: PathBuf,
     pub log_tail: Vec<String>,
 }
 
 pub fn plist_path(home: &Path) -> PathBuf {
+    plist_path_for(home, LABEL)
+}
+
+pub fn plist_path_for(home: &Path, label: &str) -> PathBuf {
     home.join("Library")
         .join("LaunchAgents")
-        .join(format!("{LABEL}.plist"))
+        .join(format!("{label}.plist"))
 }
 
 pub fn log_path(home: &Path) -> PathBuf {
@@ -131,7 +174,39 @@ pub fn stable_brew_binary(exe: &Path) -> PathBuf {
     exe.to_path_buf()
 }
 
-pub fn render_plist(binary: &Path, folder: &Path, log: &Path) -> String {
+pub fn render_plist(
+    binary: &Path,
+    program: &WatchProgram,
+    log: &Path,
+    label: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    let mut args = String::new();
+    args.push_str(&xml_string(&binary.display().to_string()));
+    args.push_str(&xml_string("watch"));
+    args.push_str(&xml_string(&program.folder.display().to_string()));
+    if let Some(rules) = &program.rules {
+        args.push_str(&xml_string("--rules"));
+        args.push_str(&xml_string(&rules.display().to_string()));
+    }
+    if let Some(older) = &program.older_than {
+        args.push_str(&xml_string("--older-than"));
+        args.push_str(&xml_string(older));
+    }
+
+    let mut env_block = String::new();
+    if !env_vars.is_empty() {
+        env_block.push_str("  <key>EnvironmentVariables</key>\n  <dict>\n");
+        for (key, value) in env_vars {
+            env_block.push_str(&format!(
+                "    <key>{}</key>\n    <string>{}</string>\n",
+                xml_escape(key),
+                xml_escape(value)
+            ));
+        }
+        env_block.push_str("  </dict>\n");
+    }
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -141,10 +216,7 @@ pub fn render_plist(binary: &Path, folder: &Path, log: &Path) -> String {
   <string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{binary}</string>
-    <string>watch</string>
-    <string>{folder}</string>
-  </array>
+{args}  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -155,22 +227,71 @@ pub fn render_plist(binary: &Path, folder: &Path, log: &Path) -> String {
   <string>{log}</string>
   <key>ProcessType</key>
   <string>Background</string>
-</dict>
+{env} </dict>
 </plist>
 "#,
-        label = xml_escape(LABEL),
-        binary = xml_escape(&binary.display().to_string()),
-        folder = xml_escape(&folder.display().to_string()),
+        label = xml_escape(label),
+        args = args,
         log = xml_escape(&log.display().to_string()),
+        env = env_block,
     )
+}
+
+fn xml_string(text: &str) -> String {
+    format!("    <string>{}</string>\n", xml_escape(text))
+}
+
+/// Snapshot of TIDY_* overrides so a launchd agent uses the same isolation
+/// the installing process had (tests, the Mac smoke script, demos).
+pub fn snapshot_override_env() -> Vec<(String, String)> {
+    const KEYS: &[&str] = &[
+        "TIDY_HOME",
+        "TIDY_CONFIG_DIR",
+        "TIDY_DATA_DIR",
+        "TIDY_FAKE_TRASH",
+        "TIDY_WATCH_SETTLE_MS",
+    ];
+    let mut out = Vec::new();
+    for key in KEYS {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                out.push(((*key).to_string(), value));
+            }
+        }
+    }
+    out
+}
+
+/// Make `--rules` absolute so the agent still finds the file after launchd
+/// starts with a different working directory.
+pub fn absolute_rules_path(path: &Path) -> Result<PathBuf, Error> {
+    if !path.exists() {
+        return Err(Error::msg(format!(
+            "rules file not found: {}",
+            path.display()
+        )));
+    }
+    if !path.is_file() {
+        return Err(Error::msg(format!(
+            "rules path is not a file: {}",
+            path.display()
+        )));
+    }
+    fs::canonicalize(path)
+        .map_err(|err| Error::io(format!("resolving rules file {}", path.display()), err))
 }
 
 /// Write the plist and load it. Refuses to replace a different plist unless
 /// `force` is set. Returns the human-readable summary.
-pub fn install(paths: &LaunchPaths, folder: &Path, force: bool) -> Result<String, Error> {
-    let plist = plist_path(&paths.home);
+pub fn install(
+    paths: &LaunchPaths,
+    program: &WatchProgram,
+    env_vars: &[(String, String)],
+    force: bool,
+) -> Result<String, Error> {
+    let plist = plist_path_for(&paths.home, &paths.label);
     let log = log_path(&paths.home);
-    let xml = render_plist(&paths.binary, folder, &log);
+    let xml = render_plist(&paths.binary, program, &log, &paths.label, env_vars);
     if let Some(parent) = plist.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| Error::io(format!("creating {}", parent.display()), err))?;
@@ -191,7 +312,7 @@ pub fn install(paths: &LaunchPaths, folder: &Path, force: bool) -> Result<String
         .map_err(|err| Error::io(format!("writing {}", plist.display()), err))?;
 
     let domain = format!("gui/{}", paths.uid);
-    let target = format!("{domain}/{LABEL}");
+    let target = format!("{domain}/{}", paths.label);
     // A missing job makes bootout fail. That is the first install, not an error.
     let _ = run_launchctl(paths, &["bootout".to_string(), target.clone()])?;
     let boot = run_launchctl(
@@ -211,15 +332,15 @@ pub fn install(paths: &LaunchPaths, folder: &Path, force: bool) -> Result<String
         "Using binary {}\nWrote {}\nLoaded {target}\nWatching {}\nLog {}\n",
         paths.binary.display(),
         plist.display(),
-        folder.display(),
+        program.folder.display(),
         log.display()
     ))
 }
 
 /// Boot the job out, then delete the plist tidy installed.
 pub fn uninstall(paths: &LaunchPaths) -> Result<String, Error> {
-    let plist = plist_path(&paths.home);
-    let target = format!("gui/{}/{LABEL}", paths.uid);
+    let plist = plist_path_for(&paths.home, &paths.label);
+    let target = format!("gui/{}/{}", paths.uid, paths.label);
     let _ = run_launchctl(paths, &["bootout".to_string(), target.clone()])?;
     if plist.is_file() {
         fs::remove_file(&plist)
@@ -239,16 +360,16 @@ pub fn uninstall(paths: &LaunchPaths) -> Result<String, Error> {
 }
 
 pub fn status(paths: &LaunchPaths) -> Result<LaunchStatus, Error> {
-    let plist = plist_path(&paths.home);
+    let plist = plist_path_for(&paths.home, &paths.label);
     let log = log_path(&paths.home);
-    let (binary, folder) = if plist.is_file() {
+    let parsed = if plist.is_file() {
         let text = fs::read_to_string(&plist)
             .map_err(|err| Error::io(format!("reading {}", plist.display()), err))?;
-        program_from_plist(&text)
+        parse_watch_program(&text)
     } else {
-        (None, None)
+        ParsedWatchProgram::default()
     };
-    let target = format!("gui/{}/{LABEL}", paths.uid);
+    let target = format!("gui/{}/{}", paths.uid, paths.label);
     let output = run_launchctl(paths, &["print".to_string(), target])?;
     let job = parse_launchctl_print(
         output.status.success(),
@@ -256,9 +377,12 @@ pub fn status(paths: &LaunchPaths) -> Result<LaunchStatus, Error> {
     );
     Ok(LaunchStatus {
         plist_path: plist,
-        plist_exists: plist_path(&paths.home).is_file(),
-        binary,
-        folder,
+        plist_exists: plist_path_for(&paths.home, &paths.label).is_file(),
+        binary: parsed.binary,
+        folder: parsed.folder,
+        rules: parsed.rules,
+        older_than: parsed.older_than,
+        arguments: parsed.arguments,
         job,
         log_path: log.clone(),
         log_tail: log_tail(&log, 8)?,
@@ -290,6 +414,20 @@ pub fn render_status(status: &LaunchStatus, color: bool) -> String {
             status.folder.as_deref().unwrap_or("(unknown)")
         ),
     );
+    line(
+        &mut out,
+        &format!("Rules   {}", status.rules.as_deref().unwrap_or("(default)")),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Age     {}",
+            status.older_than.as_deref().unwrap_or("(none)")
+        ),
+    );
+    if !status.arguments.is_empty() {
+        line(&mut out, &format!("Args    {}", status.arguments.join(" ")));
+    }
     let job = if !status.job.loaded {
         "not loaded".to_string()
     } else {
@@ -326,6 +464,9 @@ pub fn render_status_json(status: &LaunchStatus) -> Result<String, Error> {
         "plist_exists": status.plist_exists,
         "binary": status.binary,
         "folder": status.folder,
+        "rules": status.rules,
+        "older_than": status.older_than,
+        "arguments": status.arguments,
         "loaded": status.job.loaded,
         "state": status.job.state,
         "pid": status.job.pid,
@@ -374,14 +515,81 @@ pub fn parse_launchctl_print(command_ok: bool, stdout: &str) -> JobInfo {
 }
 
 pub fn program_from_plist(xml: &str) -> (Option<String>, Option<String>) {
-    let strings = xml_strings(xml);
-    let binary = strings.get(1).cloned();
-    let folder = if strings.get(2).map(String::as_str) == Some("watch") {
-        strings.get(3).cloned()
-    } else {
-        None
+    let parsed = parse_watch_program(xml);
+    (parsed.binary, parsed.folder)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedWatchProgram {
+    pub binary: Option<String>,
+    pub folder: Option<String>,
+    pub rules: Option<String>,
+    pub older_than: Option<String>,
+    pub arguments: Vec<String>,
+}
+
+/// Read ProgramArguments from an installed plist.
+pub fn parse_watch_program(xml: &str) -> ParsedWatchProgram {
+    let args = plist_array_after_key(xml, "ProgramArguments");
+    let mut parsed = ParsedWatchProgram {
+        arguments: args.clone(),
+        ..ParsedWatchProgram::default()
     };
-    (binary, folder)
+    if args.is_empty() {
+        return parsed;
+    }
+    parsed.binary = args.first().cloned();
+    let rest = if args.get(1).map(String::as_str) == Some("watch") {
+        &args[2..]
+    } else {
+        &args[1..]
+    };
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--rules" => {
+                if let Some(value) = rest.get(i + 1) {
+                    parsed.rules = Some(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--older-than" => {
+                if let Some(value) = rest.get(i + 1) {
+                    parsed.older_than = Some(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            flag if flag.starts_with('-') => {
+                i += 1;
+                continue;
+            }
+            _ => {
+                if parsed.folder.is_none() {
+                    parsed.folder = Some(rest[i].clone());
+                }
+            }
+        }
+        i += 1;
+    }
+    parsed
+}
+
+fn plist_array_after_key(xml: &str, key: &str) -> Vec<String> {
+    let marker = format!("<key>{key}</key>");
+    let Some(start) = xml.find(&marker) else {
+        return Vec::new();
+    };
+    let rest = &xml[start + marker.len()..];
+    let Some(array_start) = rest.find("<array>") else {
+        return Vec::new();
+    };
+    let rest = &rest[array_start + "<array>".len()..];
+    let Some(array_end) = rest.find("</array>") else {
+        return Vec::new();
+    };
+    xml_strings(&rest[..array_end])
 }
 
 fn xml_strings(xml: &str) -> Vec<String> {
@@ -503,7 +711,18 @@ mod tests {
         let binary = Path::new("/opt/homebrew/bin/tidy");
         let folder = Path::new("/Users/a&b/Downloads <fun>");
         let log = Path::new("/Users/a&b/Library/Logs/tidy.log");
-        let xml = render_plist(binary, folder, log);
+        let program = WatchProgram {
+            folder: folder.to_path_buf(),
+            rules: Some(PathBuf::from("/tmp/rules & <mine>.toml")),
+            older_than: Some("30d".into()),
+        };
+        let xml = render_plist(
+            binary,
+            &program,
+            log,
+            LABEL,
+            &[("TIDY_HOME".into(), "/Users/a&b".into())],
+        );
         assert!(xml.contains("<key>Label</key>"));
         assert!(xml.contains("<string>com.github.jherin89.tidy</string>"));
         assert!(xml.contains("<key>RunAtLoad</key>"));
@@ -513,24 +732,34 @@ mod tests {
         assert!(xml.contains("<string>Background</string>"));
         assert!(xml.contains("<string>/opt/homebrew/bin/tidy</string>"));
         assert!(xml.contains("<string>watch</string>"));
+        assert!(xml.contains("<string>--rules</string>"));
+        assert!(xml.contains("<string>--older-than</string>"));
+        assert!(xml.contains("<string>30d</string>"));
         assert!(xml.contains("&amp;"));
         assert!(xml.contains("&lt;"));
         assert!(!xml.contains("Downloads <fun>"));
+        assert!(!xml.contains("rules & <mine>"));
+        assert!(xml.contains("rules &amp; &lt;mine&gt;.toml"));
+        assert!(xml.contains("<key>EnvironmentVariables</key>"));
+        assert!(xml.contains("<key>TIDY_HOME</key>"));
         let (bin, watched) = program_from_plist(&xml);
         assert_eq!(bin.as_deref(), Some("/opt/homebrew/bin/tidy"));
         assert_eq!(watched.as_deref(), Some("/Users/a&b/Downloads <fun>"));
+        let parsed = parse_watch_program(&xml);
+        assert_eq!(parsed.rules.as_deref(), Some("/tmp/rules & <mine>.toml"));
+        assert_eq!(parsed.older_than.as_deref(), Some("30d"));
         assert!(xml.contains("StandardOutPath"));
         assert!(xml.contains("StandardErrorPath"));
     }
 
     #[test]
     fn cellar_paths_prefer_the_stable_prefix_link() {
-        let cellar = Path::new("/opt/homebrew/Cellar/tidy/0.2.0/bin/tidy");
+        let cellar = Path::new("/opt/homebrew/Cellar/tidy/0.3.0/bin/tidy");
         assert_eq!(
             stable_brew_binary(cellar),
             PathBuf::from("/opt/homebrew/bin/tidy")
         );
-        let intel = Path::new("/usr/local/Cellar/tidy/0.2.0/bin/tidy");
+        let intel = Path::new("/usr/local/Cellar/tidy/0.3.0/bin/tidy");
         assert_eq!(
             stable_brew_binary(intel),
             PathBuf::from("/usr/local/bin/tidy")
@@ -539,7 +768,7 @@ mod tests {
         assert_eq!(stable_brew_binary(plain), plain);
 
         let tmp = tempfile::tempdir().unwrap();
-        let exe = tmp.path().join("Cellar/tidy/0.2.0/bin/tidy");
+        let exe = tmp.path().join("Cellar/tidy/0.3.0/bin/tidy");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"cellar").unwrap();
         let opt = tmp.path().join("opt/tidy/bin/tidy");
@@ -612,6 +841,15 @@ gui/501/com.github.jherin89.tidy = {
             uid: 501,
             launchctl,
             binary: PathBuf::from("/opt/homebrew/bin/tidy"),
+            label: LABEL.to_string(),
+        }
+    }
+
+    fn watch_at(folder: &Path) -> WatchProgram {
+        WatchProgram {
+            folder: folder.to_path_buf(),
+            rules: None,
+            older_than: None,
         }
     }
 
@@ -626,18 +864,18 @@ gui/501/com.github.jherin89.tidy = {
         );
         let paths = paths(&home, script);
         let folder = PathBuf::from("/tmp/Downloads");
-        let summary = install(&paths, &folder, false).unwrap();
+        let summary = install(&paths, &watch_at(&folder), &[], false).unwrap();
         assert!(summary.contains("/opt/homebrew/bin/tidy"), "{summary}");
         let plist = plist_path(&home);
         let first = fs::read_to_string(&plist).unwrap();
         assert!(first.contains("<string>watch</string>"));
 
         fs::write(&plist, "different\n").unwrap();
-        let err = install(&paths, &folder, false).unwrap_err();
+        let err = install(&paths, &watch_at(&folder), &[], false).unwrap_err();
         assert!(err.to_string().contains("--force"), "{err}");
         assert_eq!(fs::read_to_string(&plist).unwrap(), "different\n");
 
-        install(&paths, &folder, true).unwrap();
+        install(&paths, &watch_at(&folder), &[], true).unwrap();
         let replaced = fs::read_to_string(&plist).unwrap();
         assert!(replaced.contains("/tmp/Downloads"));
         let recorded = fs::read_to_string(&log).unwrap();
@@ -663,7 +901,17 @@ gui/501/com.github.jherin89.tidy = {
         let (script, log) = fake_launchctl(tmp.path(), &body);
         let paths = paths(&home, script);
         let folder = home.join("Downloads");
-        install(&paths, &folder, false).unwrap();
+        install(
+            &paths,
+            &WatchProgram {
+                folder: folder.clone(),
+                rules: Some(PathBuf::from("/tmp/custom.toml")),
+                older_than: Some("7d".into()),
+            },
+            &[],
+            false,
+        )
+        .unwrap();
         let log_file = log_path(&home);
         fs::create_dir_all(log_file.parent().unwrap()).unwrap();
         fs::write(&log_file, "one\ntwo\nthree\n").unwrap();
@@ -672,6 +920,12 @@ gui/501/com.github.jherin89.tidy = {
         assert!(status.plist_exists);
         assert_eq!(status.folder.as_deref(), Some(folder.to_str().unwrap()));
         assert_eq!(status.binary.as_deref(), Some("/opt/homebrew/bin/tidy"));
+        assert_eq!(status.rules.as_deref(), Some("/tmp/custom.toml"));
+        assert_eq!(status.older_than.as_deref(), Some("7d"));
+        let text = render_status(&status, false);
+        assert!(text.contains("/tmp/custom.toml"), "{text}");
+        assert!(text.contains("7d"), "{text}");
+        assert!(text.contains("--rules"), "{text}");
         assert!(status.job.loaded);
         assert_eq!(status.job.state.as_deref(), Some("running"));
         assert_eq!(status.job.pid, Some(99));

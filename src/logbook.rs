@@ -180,12 +180,12 @@ mod tests {
             rules_source_label: "test".into(),
             rules_path: None,
             actions: vec![PlannedAction {
-                file: FileEntry {
-                    path: folder.join("a.pdf"),
-                    name: "a.pdf".into(),
-                    size: 3,
-                    modified: SystemTime::now() - Duration::from_secs(5),
-                },
+                file: FileEntry::new(
+                    folder.join("a.pdf"),
+                    "a.pdf",
+                    3,
+                    SystemTime::now() - Duration::from_secs(5),
+                ),
                 rule_name: "PDFs".into(),
                 kind: ActionKind::Move,
                 destination: Some(env.home.join("Documents/PDFs/a.pdf")),

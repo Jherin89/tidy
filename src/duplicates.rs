@@ -35,10 +35,15 @@ impl DuplicateIndex {
     }
 
     /// Group `files` (the eligible, non-skipped top-level files).
+    ///
+    /// Package documents (`is_bundle`) are skipped: hashing a `.pages` tree
+    /// is not a useful byte-identity check, and two independently saved
+    /// documents can share internal files. Each bundle is filed by the other
+    /// rules instead.
     pub fn build(folder: &Path, files: &[FileEntry]) -> Result<Self, Error> {
         let mut by_size: HashMap<u64, Vec<&FileEntry>> = HashMap::new();
         for file in files {
-            if file.size == 0 {
+            if file.size == 0 || file.is_bundle {
                 continue;
             }
             by_size.entry(file.size).or_default().push(file);
@@ -88,8 +93,12 @@ impl DuplicateIndex {
     ///
     /// Watch mode and the age filter both use this so a new file identical to
     /// one that the filter would skip is still an extra copy.
-    pub fn for_folder(folder: &Path, now: SystemTime) -> Result<Self, Error> {
-        let (files, _) = scan::scan(folder, None, now)?;
+    pub fn for_folder(
+        folder: &Path,
+        now: SystemTime,
+        bundle_exts: &[String],
+    ) -> Result<Self, Error> {
+        let (files, _) = scan::scan_with(folder, None, now, bundle_exts, &crate::age::SystemAge)?;
         Self::build(folder, &files)
     }
 }
@@ -130,12 +139,7 @@ mod tests {
         let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) - age;
         let file = fs::File::options().write(true).open(&path).unwrap();
         file.set_modified(modified).unwrap();
-        FileEntry {
-            path,
-            name: name.to_string(),
-            size: bytes.len() as u64,
-            modified,
-        }
+        FileEntry::new(path, name, bytes.len() as u64, modified)
     }
 
     fn names_of(index: &DuplicateIndex) -> Vec<(String, String)> {
@@ -232,6 +236,20 @@ mod tests {
         ];
         let index = DuplicateIndex::build(folder, &files).unwrap();
         assert!(index.extras.is_empty());
+    }
+
+    #[test]
+    fn package_documents_are_not_treated_as_duplicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path();
+        let age = Duration::from_secs(10);
+        let mut a = touch(folder, "one.pages", b"same", age);
+        a.is_bundle = true;
+        let mut b = touch(folder, "two.pages", b"same", age);
+        b.is_bundle = true;
+        let index = DuplicateIndex::build(folder, &[a, b]).unwrap();
+        assert!(index.extras.is_empty());
+        assert!(index.keepers.is_empty());
     }
 
     #[test]

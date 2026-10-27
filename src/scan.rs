@@ -4,18 +4,39 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::age::{resolve_age, AgeKind, AgeProbe, SystemAge};
 use crate::error::Error;
-use crate::names::{is_hidden_name, is_partial_name};
+use crate::names::{extension_matches, is_hidden_name, is_partial_name};
 use crate::privacy;
 use crate::rules::is_older_than;
 
-/// A regular file tidy may match against the rules.
+/// A regular file, or a package directory treated as one item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub path: PathBuf,
     pub name: String,
     pub size: u64,
     pub modified: SystemTime,
+    /// Timestamp `older_than` uses. See [`AgeKind`].
+    pub age: SystemTime,
+    pub age_kind: AgeKind,
+    /// Directory whose extension is listed on a rule. Moved/trashed whole.
+    pub is_bundle: bool,
+}
+
+impl FileEntry {
+    /// Test helper. Age is `modified` tagged as modified, not a bundle.
+    pub fn new(path: PathBuf, name: impl Into<String>, size: u64, modified: SystemTime) -> Self {
+        Self {
+            path,
+            name: name.into(),
+            size,
+            modified,
+            age: modified,
+            age_kind: AgeKind::Modified,
+            is_bundle: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,13 +78,25 @@ pub enum Inspect {
     Gone,
 }
 
-/// Classify one path. Only a regular file that is a direct child of `folder`
-/// can become a candidate. Symlinks are never followed.
+/// Classify one path. Only a regular file (or a package directory whose
+/// extension is listed on a rule) that is a direct child of `folder` can
+/// become a candidate. Symlinks are never followed.
 pub fn inspect(
     folder: &Path,
     path: &Path,
     older_than: Option<Duration>,
     now: SystemTime,
+) -> Result<Inspect, Error> {
+    inspect_with(folder, path, older_than, now, &[], &SystemAge)
+}
+
+pub fn inspect_with(
+    folder: &Path,
+    path: &Path,
+    older_than: Option<Duration>,
+    now: SystemTime,
+    bundle_exts: &[String],
+    ages: &dyn AgeProbe,
 ) -> Result<Inspect, Error> {
     let Some(name) = path
         .file_name()
@@ -92,10 +125,12 @@ pub fn inspect(
     if meta.file_type().is_symlink() {
         return Ok(Inspect::Skip(skipped(path, name, SkipReason::Symlink)));
     }
-    if meta.is_dir() {
+
+    let is_bundle = meta.is_dir() && is_bundle_name(&name, bundle_exts);
+    if meta.is_dir() && !is_bundle {
         return Ok(Inspect::Skip(skipped(path, name, SkipReason::Directory)));
     }
-    if !meta.is_file() {
+    if !is_bundle && !meta.is_file() {
         return Ok(Inspect::Skip(skipped(path, name, SkipReason::NotRegular)));
     }
     if is_hidden_name(&name) {
@@ -116,8 +151,10 @@ pub fn inspect(
             err,
         )
     })?;
+    let times = ages.probe(path, &meta);
+    let (age, age_kind) = resolve_age(times);
     if let Some(min_age) = older_than {
-        if !is_older_than(modified, now, min_age) {
+        if !is_older_than(age, now, min_age) {
             return Ok(Inspect::Skip(skipped(
                 path,
                 name,
@@ -126,12 +163,53 @@ pub fn inspect(
         }
     }
 
+    let size = if is_bundle {
+        directory_size(folder, path)?
+    } else {
+        meta.len()
+    };
+
     Ok(Inspect::Candidate(FileEntry {
         path: path.to_path_buf(),
         name,
-        size: meta.len(),
+        size,
         modified,
+        age,
+        age_kind,
+        is_bundle,
     }))
+}
+
+/// True when `name`'s extension is listed on a rule, so a directory with
+/// that name is a package document (`.pages`, `.numbers`, `.key`, `.rtfd`,
+/// or whatever else a rule names — `.app` only if a rule lists it).
+pub fn is_bundle_name(name: &str, bundle_exts: &[String]) -> bool {
+    !bundle_exts.is_empty() && extension_matches(name, bundle_exts)
+}
+
+/// Sum of regular-file lengths under `path`. Symlinks are not followed.
+fn directory_size(folder: &Path, path: &Path) -> Result<u64, Error> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let reader = fs::read_dir(&dir)
+            .map_err(|err| privacy::annotate(folder, format!("reading {}", dir.display()), err))?;
+        for item in reader {
+            let item = item.map_err(|err| {
+                privacy::annotate(folder, format!("reading {}", dir.display()), err)
+            })?;
+            let child = item.path();
+            let meta = fs::symlink_metadata(&child).map_err(|err| {
+                privacy::annotate(folder, format!("reading {}", child.display()), err)
+            })?;
+            if meta.is_dir() {
+                stack.push(child);
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 fn skipped(path: &Path, name: String, reason: SkipReason) -> Skipped {
@@ -148,6 +226,16 @@ pub fn scan(
     older_than: Option<Duration>,
     now: SystemTime,
 ) -> Result<(Vec<FileEntry>, Vec<Skipped>), Error> {
+    scan_with(folder, older_than, now, &[], &SystemAge)
+}
+
+pub fn scan_with(
+    folder: &Path,
+    older_than: Option<Duration>,
+    now: SystemTime,
+    bundle_exts: &[String],
+    ages: &dyn AgeProbe,
+) -> Result<(Vec<FileEntry>, Vec<Skipped>), Error> {
     let reader = fs::read_dir(folder)
         .map_err(|err| privacy::annotate(folder, format!("reading {}", folder.display()), err))?;
     let mut entries = Vec::new();
@@ -156,7 +244,7 @@ pub fn scan(
         let item = item.map_err(|err| {
             privacy::annotate(folder, format!("reading {}", folder.display()), err)
         })?;
-        match inspect(folder, &item.path(), older_than, now)? {
+        match inspect_with(folder, &item.path(), older_than, now, bundle_exts, ages)? {
             Inspect::Candidate(file) => entries.push(file),
             Inspect::Skip(skip) => skipped_entries.push(skip),
             Inspect::Outside | Inspect::Gone => {}
@@ -266,12 +354,104 @@ mod tests {
         let now = SystemTime::now();
         filetime_backdate(&old, now - Duration::from_secs(10 * 86400));
 
-        let (entries, skipped) = scan(&folder, Some(Duration::from_secs(7 * 86400)), now).unwrap();
+        // ModifiedOnlyAge makes a backdated mtime count as the file's age, so
+        // this still tests the filter itself. Production uses birth/Date Added.
+        let (entries, skipped) = scan_with(
+            &folder,
+            Some(Duration::from_secs(7 * 86400)),
+            now,
+            &[],
+            &crate::age::ModifiedOnlyAge,
+        )
+        .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "old.txt");
         assert!(skipped
             .iter()
             .any(|s| s.name == "new.txt" && s.reason == SkipReason::NewerThanFilter));
+    }
+
+    struct RecentBirth;
+
+    impl AgeProbe for RecentBirth {
+        fn probe(&self, _path: &Path, meta: &fs::Metadata) -> crate::age::FileTimes {
+            crate::age::FileTimes {
+                modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                created: Some(SystemTime::now()),
+                added: None,
+            }
+        }
+    }
+
+    #[test]
+    fn old_mtime_with_recent_birth_is_not_old() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("Downloads");
+        fs::create_dir_all(&folder).unwrap();
+        let dmg = folder.join("Installer.dmg");
+        fs::write(&dmg, b"dmg").unwrap();
+        let now = SystemTime::now();
+        filetime_backdate(&dmg, now - Duration::from_secs(40 * 86400));
+
+        let (entries, skipped) = scan_with(
+            &folder,
+            Some(Duration::from_secs(7 * 86400)),
+            now,
+            &[],
+            &RecentBirth,
+        )
+        .unwrap();
+        assert!(
+            entries.is_empty(),
+            "a just-copied installer with old mtime must not match older_than"
+        );
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "Installer.dmg" && s.reason == SkipReason::NewerThanFilter));
+        let inspected = inspect_with(&folder, &dmg, None, now, &[], &RecentBirth).unwrap();
+        let Inspect::Candidate(file) = inspected else {
+            panic!("expected a candidate without the age filter, got {inspected:?}");
+        };
+        assert_eq!(file.age_kind, AgeKind::Created);
+        assert!(now.duration_since(file.age).unwrap_or(Duration::ZERO) < Duration::from_secs(60));
+    }
+
+    #[test]
+    fn listed_bundle_is_one_item_and_unlisted_dir_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("Downloads");
+        fs::create_dir_all(&folder).unwrap();
+        let pages = folder.join("Report.pages");
+        fs::create_dir_all(pages.join("Contents")).unwrap();
+        fs::write(pages.join("index.xml"), b"<pages/>").unwrap();
+        fs::write(pages.join("Contents/Data"), b"hello").unwrap();
+        fs::create_dir_all(folder.join("nested")).unwrap();
+        fs::write(folder.join("nested/inner.pdf"), b"nope").unwrap();
+        fs::create_dir_all(folder.join("Some.app")).unwrap();
+        fs::write(folder.join("Some.app/Info.plist"), b"app").unwrap();
+
+        let bundles = vec![
+            "pages".to_string(),
+            "numbers".to_string(),
+            "key".to_string(),
+        ];
+        let now = SystemTime::now();
+        let (entries, skipped) = scan_with(&folder, None, now, &bundles, &SystemAge).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Report.pages");
+        assert!(entries[0].is_bundle);
+        assert_eq!(
+            entries[0].size,
+            b"<pages/>".len() as u64 + b"hello".len() as u64
+        );
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "nested" && s.reason == SkipReason::Directory));
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "Some.app" && s.reason == SkipReason::Directory));
+        assert!(folder.join("nested/inner.pdf").is_file());
+        assert!(pages.join("Contents/Data").is_file());
     }
 
     fn filetime_backdate(path: &Path, when: SystemTime) {

@@ -33,7 +33,8 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub rules: Option<PathBuf>,
 
-    /// Only consider files whose modified time is at least this old.
+    /// Only consider files this old. Age is Date Added on macOS, otherwise
+    /// the later of created and modified.
     ///
     /// Examples: 30d, 12h, 2w. This filter is applied before the rules.
     /// Duplicate detection still sees the whole folder.
@@ -107,7 +108,7 @@ pub enum Command {
         /// Use this rules file instead of the one in the config directory.
         #[arg(long, value_name = "FILE")]
         rules: Option<PathBuf>,
-        /// Only consider files whose modified time is at least this old.
+        /// Only consider files this old (Date Added on macOS).
         #[arg(long, value_name = "DURATION")]
         older_than: Option<String>,
         /// Register a launchd agent that runs `tidy watch` (macOS).

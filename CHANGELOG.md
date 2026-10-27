@@ -5,7 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-26
+
+### Added
+
+- Age for `older_than` (the flag and the rule condition) uses Finder's Date Added on macOS (`kMDItemDateAdded` / `ATTR_CMN_ADDEDTIME` via `getattrlist`). When that stamp is missing, and on Linux, the age is the later of created (birth) and modified. A freshly copied old `.dmg` is not treated as old. `tidy explain` and JSON report the date source (`(date added)`, `(created)`, `(modified)`).
+- Package documents (`.pages`, `.numbers`, `.key`, `.rtfd`, and any other directory whose extension is listed on a matching rule) are one item: moved or trashed as a whole, never recursed into. Other directories are still skipped. `.app` is a package only if a rule lists that extension. Duplicate detection skips package documents.
+- `tidy watch --install` writes `--rules` (absolute) and `--older-than` into the launchd plist's `ProgramArguments`. Flags that cannot be honored under launchd (`--apply`, `--json` with `--install`) are rejected. `tidy watch --status` shows the configured arguments parsed from the installed plist.
+- `scripts/mac-smoke-test.sh` runs an isolated Mac end-to-end check in a temp folder (Date Added, packages, launchd with a distinct label, Finder trash / Put Back). It never touches `~/Downloads`.
+- `TIDY_LAUNCHD_LABEL` overrides the launchd job label so the smoke test can install a throwaway agent.
+
+### Fixed
+
+- `tidy watch --install` dropped `--rules` and `--older-than` instead of storing them on the agent.
+
+### Changed
+
+- `--older-than` and rule `older_than` no longer use raw mtime.
+- Built-in Documents rule includes `rtfd`. Default rules comments document Date Added and package documents.
+- CI lints `tidy watch --install --print --rules … --older-than 7d` with `plutil` in addition to the flagless plist.
 
 ### Maintenance
 

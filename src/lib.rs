@@ -5,8 +5,11 @@
 //! [`Trasher`] so tests never touch a real home directory, config directory,
 //! data directory, or the system Trash.
 
-#![forbid(unsafe_code)]
+// Unsafe is denied except for the macOS Date Added read in `age`, which
+// calls `getattrlist`. That is the only `unsafe` in the crate.
+#![deny(unsafe_code)]
 
+pub mod age;
 pub mod app;
 pub mod apply;
 pub mod cli;

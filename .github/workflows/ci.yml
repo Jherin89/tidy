@@ -26,6 +26,8 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --check
+      - name: Syntax-check the Mac smoke script
+        run: bash -n scripts/mac-smoke-test.sh
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
@@ -50,3 +52,16 @@ jobs:
           plist="${RUNNER_TEMP}/tidy.plist"
           ./target/debug/tidy watch --install --print > "${plist}"
           plutil -lint "${plist}"
+          rules="${RUNNER_TEMP}/rules.toml"
+          cat > "${rules}" <<'EOF'
+          [[rules]]
+          name = "PDFs"
+          extensions = ["pdf"]
+          action = "move"
+          destination = "Filed"
+          EOF
+          plist_flags="${RUNNER_TEMP}/tidy-flags.plist"
+          ./target/debug/tidy watch --install --print --rules "${rules}" --older-than 7d > "${plist_flags}"
+          plutil -lint "${plist_flags}"
+          grep -q -- "--rules" "${plist_flags}"
+          grep -q -- "--older-than" "${plist_flags}"

@@ -8,6 +8,7 @@
 //! * `TIDY_DATA_DIR` — replaces `dirs::data_dir()`
 //! * `TIDY_FAKE_TRASH` — move "trashed" files into this directory instead of
 //!   the system Trash (tests and demos)
+//! * `TIDY_LAUNCHD_LABEL` — launchd job label (default `com.github.jherin89.tidy`)
 
 use std::path::{Path, PathBuf};
 

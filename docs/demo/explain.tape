@@ -1,6 +1,6 @@
 Output "/tmp/tidy-explain.gif"
 Set Width 1560
-Set Height 780
+Set Height 1100
 Source "docs/demo/common.tape"
 Type "tidy explain zoom-installer.pkg"
 Enter

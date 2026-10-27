@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use crate::env::{contract_home, Env};
 use crate::error::Error;
-use crate::plan::{plan_entries, view_folder, ActionKind, Plan};
+use crate::plan::{plan_entries, ActionKind, Plan};
 use crate::rules::{ConditionExplain, Ruleset};
 use crate::scan::{self, Inspect, SkipReason};
 
@@ -86,6 +86,16 @@ pub fn explain_path(
     path: &Path,
     now: SystemTime,
 ) -> Result<Explanation, Error> {
+    explain_path_with(env, rules, path, now, &crate::age::SystemAge)
+}
+
+pub fn explain_path_with(
+    env: &Env,
+    rules: &Ruleset,
+    path: &Path,
+    now: SystemTime,
+    ages: &dyn crate::age::AgeProbe,
+) -> Result<Explanation, Error> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -108,7 +118,8 @@ pub fn explain_path(
 
     let folder = scan::resolve_folder(parent_dir(path))?;
     let child = folder.join(&name);
-    let inspected = scan::inspect(&folder, &child, None, now)?;
+    let bundles = rules.bundle_extensions();
+    let inspected = scan::inspect_with(&folder, &child, None, now, &bundles, ages)?;
     match inspected {
         Inspect::Skip(skip) => {
             return Ok(skipped_explanation(
@@ -131,7 +142,7 @@ pub fn explain_path(
         Inspect::Candidate(_) => {}
     }
 
-    let view = view_folder(&folder, None, now)?;
+    let view = crate::plan::view_folder_with(&folder, None, now, &bundles, ages)?;
     let plan = plan_entries(
         env,
         &folder,
@@ -247,7 +258,9 @@ fn skip_detail(reason: SkipReason) -> &'static str {
     match reason {
         SkipReason::Hidden => "hidden files are left in place",
         SkipReason::PartialDownload => "partial downloads are left in place",
-        SkipReason::Directory => "directories are left in place",
+        SkipReason::Directory => {
+            "directories are left in place (a package whose extension is on a rule is filed as one item)"
+        }
         SkipReason::Symlink => "symlinks are left in place",
         SkipReason::NotRegular => "only regular files are tidied",
         SkipReason::NewerThanFilter => "newer than --older-than, so it is left out of the plan",
@@ -343,11 +356,17 @@ pub fn render_json(explanation: &Explanation) -> Result<String, Error> {
                 .conditions
                 .iter()
                 .map(|condition| {
-                    serde_json::json!({
+                    let mut value = serde_json::json!({
                         "condition": condition.name,
                         "pass": condition.passed,
                         "detail": condition.detail,
-                    })
+                    });
+                    if condition.name == "older_than" {
+                        if let Some(source) = age_source_from_detail(&condition.detail) {
+                            value["age_source"] = serde_json::Value::String(source.to_string());
+                        }
+                    }
+                    value
                 })
                 .collect();
             serde_json::json!({
@@ -392,6 +411,18 @@ pub fn render_json(explanation: &Explanation) -> Result<String, Error> {
         "outcome": outcome,
     });
     serde_json::to_string_pretty(&value).map_err(|err| Error::msg(format!("json: {err}")))
+}
+
+fn age_source_from_detail(detail: &str) -> Option<&'static str> {
+    if detail.contains("(date added)") {
+        Some("date added")
+    } else if detail.contains("(created)") {
+        Some("created")
+    } else if detail.contains("(modified)") {
+        Some("modified")
+    } else {
+        None
+    }
 }
 
 fn dye(text: &str, enabled: bool, code: &str) -> String {

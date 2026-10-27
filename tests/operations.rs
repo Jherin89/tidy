@@ -5,12 +5,23 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use tidy::age::ModifiedOnlyAge;
 use tidy::apply::apply_plan;
-use tidy::plan::{plan_folder, ActionKind, ActionStatus};
+use tidy::plan::{plan_folder, plan_folder_with, ActionKind, ActionStatus};
 use tidy::rules::{load_rules, Ruleset};
 use tidy::trash::FakeTrasher;
 use tidy::undo::{undo_latest, UndoOutcome};
 use tidy::Env;
+
+fn plan_aged(
+    env: &Env,
+    folder: &Path,
+    rules: &Ruleset,
+    older_than: Option<Duration>,
+    now: SystemTime,
+) -> tidy::plan::Plan {
+    plan_folder_with(env, folder, rules, older_than, now, &ModifiedOnlyAge).unwrap()
+}
 
 fn env_at(root: &Path) -> Env {
     Env {
@@ -116,7 +127,7 @@ fn builtin_plan_apply_and_undo_round_trip() {
     let rules = builtin(&env);
     assert!(matches!(rules.source, tidy::rules::RulesSource::BuiltIn));
 
-    let plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let plan = plan_aged(&env, &folder, &rules, None, SystemTime::now());
     assert!(
         !env.home.join("Documents/PDFs").exists(),
         "planning must not create destination folders"
@@ -292,7 +303,7 @@ fn fake_trash_restore_uses_a_suffix_when_the_original_name_is_taken() {
         Duration::from_secs(40 * 86400),
     );
     let rules = builtin(&env);
-    let mut plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let mut plan = plan_aged(&env, &folder, &rules, None, SystemTime::now());
     assert_eq!(plan.actions.len(), 1);
     assert_eq!(plan.actions[0].kind, ActionKind::Trash);
     let trasher = FakeTrasher {
@@ -421,7 +432,7 @@ fn explain_winner_matches_the_plan_for_each_file() {
     );
     fs::create_dir_all(folder.join("nested")).unwrap();
 
-    let plan = plan_folder(&env, &folder, &rules, None, now).unwrap();
+    let plan = plan_aged(&env, &folder, &rules, None, now);
     for name in [
         "invoice.pdf",
         "invoice (1).pdf",
@@ -429,7 +440,14 @@ fn explain_winner_matches_the_plan_for_each_file() {
         "Docker.dmg",
         "notes.txt",
     ] {
-        let explained = tidy::explain::explain_path(&env, &rules, &folder.join(name), now).unwrap();
+        let explained = tidy::explain::explain_path_with(
+            &env,
+            &rules,
+            &folder.join(name),
+            now,
+            &ModifiedOnlyAge,
+        )
+        .unwrap();
         let planned = plan.actions.iter().find(|action| action.file.name == name);
         match planned {
             Some(action) => {
@@ -459,8 +477,14 @@ fn explain_winner_matches_the_plan_for_each_file() {
         }
     }
 
-    let extra =
-        tidy::explain::explain_path(&env, &rules, &folder.join("invoice (1).pdf"), now).unwrap();
+    let extra = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("invoice (1).pdf"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert_eq!(extra.winner(), Some("Duplicates"));
     assert_eq!(extra.destination(), Some("Trash (copy of invoice.pdf)"));
     assert!(extra.rules.iter().any(|rule| {
@@ -476,30 +500,62 @@ fn explain_winner_matches_the_plan_for_each_file() {
         .skip(1)
         .all(|rule| rule.mark == tidy::explain::RuleMark::NotEvaluated));
 
-    let keeper =
-        tidy::explain::explain_path(&env, &rules, &folder.join("invoice.pdf"), now).unwrap();
+    let keeper = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("invoice.pdf"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert_eq!(keeper.winner(), Some("PDFs"));
 
-    let notes = tidy::explain::explain_path(&env, &rules, &folder.join("notes.txt"), now).unwrap();
+    let notes = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("notes.txt"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert!(
         notes.destination().unwrap().contains("notes (1).txt"),
         "{:?}",
         notes.destination()
     );
 
-    let hidden =
-        tidy::explain::explain_path(&env, &rules, &folder.join(".secret.pdf"), now).unwrap();
+    let hidden = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join(".secret.pdf"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert!(matches!(
         hidden.outcome,
         tidy::explain::Outcome::Skipped { .. }
     ));
     assert!(tidy::explain::render(&hidden, &env, false).contains("hidden"));
 
-    let partial =
-        tidy::explain::explain_path(&env, &rules, &folder.join("video.mp4.part"), now).unwrap();
+    let partial = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("video.mp4.part"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert!(tidy::explain::render(&partial, &env, false).contains("partial"));
 
-    let nested = tidy::explain::explain_path(&env, &rules, &folder.join("nested"), now).unwrap();
+    let nested = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("nested"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert!(tidy::explain::render(&nested, &env, false).contains("directory"));
 
     let missing = tidy::explain::explain_path(&env, &rules, &folder.join("nope.pdf"), now);
@@ -542,7 +598,14 @@ fn older_than_keeps_duplicate_groups_from_the_whole_folder() {
 
     let rules = builtin(&env);
     let min_age = Duration::from_secs(30 * 86400);
-    let view = tidy::plan::view_folder(&folder, Some(min_age), now).unwrap();
+    let view = tidy::plan::view_folder_with(
+        &folder,
+        Some(min_age),
+        now,
+        &rules.bundle_extensions(),
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
     assert_eq!(
         view.duplicates.keeper_of(&folder.join("invoice (1).pdf")),
         Some("invoice.pdf")
@@ -553,7 +616,7 @@ fn older_than_keeps_duplicate_groups_from_the_whole_folder() {
     );
     assert!(view.duplicates.is_keeper(&folder.join("notes.txt")));
 
-    let plan = plan_folder(&env, &folder, &rules, Some(min_age), now).unwrap();
+    let plan = plan_aged(&env, &folder, &rules, Some(min_age), now);
     let rule = |name: &str| {
         plan.actions
             .iter()
@@ -677,4 +740,128 @@ fn watch_batch_marks_a_new_copy_of_an_existing_file() {
         plan.actions[0].destination_display,
         "Trash (copy of invoice.pdf)"
     );
+}
+
+#[test]
+fn recently_copied_installer_with_old_mtime_is_not_trashed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("setup.dmg"),
+        b"copied-installer",
+        Duration::from_secs(40 * 86400),
+    );
+    let rules = builtin(&env);
+    // SystemAge uses birth/Date Added, which is now, so this is not old.
+    let plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    assert!(
+        plan.actions
+            .iter()
+            .all(|action| action.file.name != "setup.dmg"),
+        "a just-copied .dmg with an old mtime must not match Old installers"
+    );
+    assert!(plan.unmatched.iter().any(|file| file.name == "setup.dmg"));
+}
+
+#[test]
+fn iwork_package_is_moved_as_a_whole_and_undone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let pages = folder.join("Quarterly.pages");
+    fs::create_dir_all(pages.join("Contents")).unwrap();
+    fs::write(pages.join("index.xml"), b"<document/>").unwrap();
+    fs::write(pages.join("Contents/Data"), b"payload").unwrap();
+    fs::create_dir_all(folder.join("leave-me")).unwrap();
+    fs::write(folder.join("leave-me/notes.txt"), b"stay").unwrap();
+
+    let rules = builtin(&env);
+    let plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let action = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "Quarterly.pages")
+        .unwrap_or_else(|| panic!("Quarterly.pages was not planned: {plan:?}"));
+    assert!(action.file.is_bundle);
+    assert_eq!(action.rule_name, "Documents");
+    assert_eq!(action.kind, ActionKind::Move);
+    assert!(plan.skipped.iter().any(|skip| skip.name == "leave-me"));
+    assert!(folder.join("leave-me/notes.txt").is_file());
+
+    let mut plan = plan;
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    let dest = env.home.join("Documents/Downloads/Quarterly.pages");
+    assert!(!pages.exists());
+    assert_eq!(fs::read(dest.join("index.xml")).unwrap(), b"<document/>");
+    assert_eq!(fs::read(dest.join("Contents/Data")).unwrap(), b"payload");
+    assert!(folder.join("leave-me/notes.txt").is_file());
+
+    let report = undo_latest(&env, &trasher).unwrap();
+    assert!(report.fully_undone);
+    assert_eq!(fs::read(pages.join("index.xml")).unwrap(), b"<document/>");
+    assert_eq!(fs::read(pages.join("Contents/Data")).unwrap(), b"payload");
+    assert!(!dest.exists());
+}
+
+#[test]
+fn bundle_dry_run_lists_the_package_and_does_not_recurse() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let numbers = folder.join("Budget.numbers");
+    fs::create_dir_all(numbers.join("Data")).unwrap();
+    fs::write(numbers.join("index.xml"), b"<sheet/>").unwrap();
+    fs::write(numbers.join("Data/table"), b"1,2,3").unwrap();
+
+    let rules = builtin(&env);
+    let plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    assert_eq!(plan.actions.len(), 1);
+    assert_eq!(plan.actions[0].file.name, "Budget.numbers");
+    assert!(plan.actions[0].file.is_bundle);
+    assert_eq!(plan.actions[0].status, ActionStatus::Planned);
+    assert!(numbers.join("Data/table").is_file());
+    assert!(!env.home.join("Documents/Spreadsheets").exists());
+}
+
+#[test]
+fn explain_shows_age_source_in_older_than_detail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("setup.dmg"),
+        b"old",
+        Duration::from_secs(40 * 86400),
+    );
+    let rules = builtin(&env);
+    let now = SystemTime::now();
+    let explained = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("setup.dmg"),
+        now,
+        &ModifiedOnlyAge,
+    )
+    .unwrap();
+    let older = explained
+        .rules
+        .iter()
+        .find(|rule| rule.name == "Old installers")
+        .unwrap()
+        .conditions
+        .iter()
+        .find(|c| c.name == "older_than")
+        .unwrap();
+    assert!(older.passed);
+    assert!(
+        older.detail.contains("(modified)") || older.detail.contains("(created)"),
+        "{}",
+        older.detail
+    );
+    let text = tidy::explain::render(&explained, &env, false);
+    assert!(text.contains("old ("), "{text}");
 }

@@ -1,9 +1,14 @@
 # tidy rules
 # ----------
 # tidy reads this file when deciding what to do with the loose files in a
-# folder (by default, your Downloads folder). Only top-level files are
+# folder (by default, your Downloads folder). Only top-level items are
 # considered. Hidden files, folders, symlinks, and partial downloads
 # (.crdownload, .part, .download, .tmp, .partial) are always skipped.
+# Exception: a directory whose extension is listed on a rule (.pages,
+# .numbers, .key, .rtfd, …) is a package document and is moved or trashed
+# as one item. Other folders are still skipped. `.app` is only a package
+# if a rule lists that extension. Package documents are not compared as
+# duplicates.
 #
 # Rules run from top to bottom. The first rule whose conditions all match
 # wins. A file that matches nothing is left where it is.
@@ -16,9 +21,13 @@
 #                  such as "tar.gz" matches when the file name ends with it.
 #   glob           File-name glob (globset syntax), case-insensitive. A list
 #                  matches if any one pattern matches. Example: "Screenshot*"
-#   older_than     Modified time is at least this old. Units: s, m, h, d, w
+#   older_than     Age is at least this old. Units: s, m, h, d, w
 #                  (seconds, minutes, hours, days, weeks). "m" is minutes,
 #                  not months. Examples: "30d", "12h", "2w"
+#                  On macOS the age is Finder's Date Added (when the file
+#                  landed in this folder). Elsewhere, and when Date Added is
+#                  missing, the age is the later of created (birth) and
+#                  modified. A freshly copied old .dmg is not old.
 #   larger_than    Size is at least this big. Decimal units (KB, MB, GB, TB)
 #                  use powers of 1000. Binary units (KiB, MiB, GiB, TiB) use
 #                  powers of 1024. Examples: "100MB", "500KB", "1GiB"
@@ -28,8 +37,9 @@
 #                  not an extra copy. The keeper (oldest modified time, then
 #                  the shortest name, then alphabetical) is never an extra
 #                  copy, so it falls through to the rules below. Zero-byte
-#                  files are ignored. The comparison sees the whole folder,
-#                  including files that --older-than left out of the plan.
+#                  files and package documents (.pages and other bundles) are
+#                  ignored. The comparison sees the whole folder, including
+#                  files that --older-than left out of the plan.
 #
 # Comparisons on size and age are inclusive.
 #
@@ -68,8 +78,10 @@ action = "move"
 destination = "~/Pictures/Screenshots"
 by_date = true
 
-# Installers that have been sitting around for a month are rarely needed.
-# A newer installer matches nothing here and stays in the folder.
+# Installers that have been sitting in the folder for a month are rarely
+# needed. Age is Date Added on a Mac, so a Finder copy of an old .dmg is
+# not trashed on the first run. A newer installer matches nothing here
+# and stays in the folder.
 [[rules]]
 name = "Old installers"
 extensions = ["dmg", "pkg", "exe", "msi", "deb", "rpm", "AppImage", "iso"]
@@ -109,7 +121,7 @@ destination = "~/Documents/Spreadsheets"
 
 [[rules]]
 name = "Documents"
-extensions = ["doc", "docx", "txt", "rtf", "odt", "md", "pages", "ppt", "pptx", "key", "odp"]
+extensions = ["doc", "docx", "txt", "rtf", "rtfd", "odt", "md", "pages", "ppt", "pptx", "key", "odp"]
 action = "move"
 destination = "~/Documents/Downloads"
 

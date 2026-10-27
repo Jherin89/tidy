@@ -3,8 +3,10 @@
 //! Events are debounced with `notify-debouncer-mini`. A file is eligible only
 //! after its size has stayed the same for the settle duration (2 seconds
 //! unless the caller passes another value). Partial downloads, hidden files,
-//! directories, symlinks, and anything that is not a direct child of the
-//! folder are ignored. Watch mode always applies the rules.
+//! directories that are not package documents, symlinks, and anything that
+//! is not a child of the folder are ignored. A package directory (`.pages`
+//! and other extensions listed on a rule) is watched as one item. Watch
+//! mode always applies the rules.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -149,30 +151,38 @@ pub fn watch_folder(
     })
     .map_err(|err| Error::msg(format!("could not install Ctrl-C handler: {err}")))?;
 
+    let bundles = rules.bundle_extensions();
     let mut stabilizer = Stabilizer::new(settle);
     loop {
         if stop.load(Ordering::SeqCst) {
             return Ok(());
         }
         match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(path) => observe_path(&mut stabilizer, folder, &path, older_than),
+            Ok(path) => observe_path(&mut stabilizer, folder, &path, older_than, &bundles),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         while let Ok(path) = rx.try_recv() {
-            observe_path(&mut stabilizer, folder, &path, older_than);
+            observe_path(&mut stabilizer, folder, &path, older_than, &bundles);
         }
 
         let now = SystemTime::now();
         let ready = stabilizer.drain_ready(Instant::now(), |path| {
-            eligible_size(folder, path, older_than, now)
+            eligible_size(folder, path, older_than, now, &bundles)
         });
         if ready.is_empty() {
             continue;
         }
         let mut entries = Vec::new();
         for path in ready {
-            if let Inspect::Candidate(file) = scan::inspect(folder, &path, older_than, now)? {
+            if let Inspect::Candidate(file) = scan::inspect_with(
+                folder,
+                &path,
+                older_than,
+                now,
+                &bundles,
+                &crate::age::SystemAge,
+            )? {
                 entries.push(file);
             }
         }
@@ -194,9 +204,21 @@ fn observe_path(
     folder: &Path,
     path: &Path,
     older_than: Option<Duration>,
+    bundle_exts: &[String],
 ) {
-    let size = eligible_size(folder, path, older_than, SystemTime::now());
-    stabilizer.observe(path.to_path_buf(), size, Instant::now());
+    let Some(target) = watch_target(folder, path) else {
+        return;
+    };
+    let size = eligible_size(folder, &target, older_than, SystemTime::now(), bundle_exts);
+    stabilizer.observe(target, size, Instant::now());
+}
+
+/// Direct child of `folder` that `path` belongs to. Inner events on a
+/// `.pages` bundle still stabilize the bundle as a whole.
+fn watch_target(folder: &Path, path: &Path) -> Option<PathBuf> {
+    let rel = path.strip_prefix(folder).ok()?;
+    let first = rel.components().next()?;
+    Some(folder.join(first.as_os_str()))
 }
 
 fn watch_start_error(folder: &Path, err: impl std::fmt::Display) -> Error {
@@ -223,8 +245,18 @@ fn eligible_size(
     path: &Path,
     older_than: Option<Duration>,
     now: SystemTime,
+    bundle_exts: &[String],
 ) -> Option<u64> {
-    match scan::inspect(folder, path, older_than, now).ok()? {
+    match scan::inspect_with(
+        folder,
+        path,
+        older_than,
+        now,
+        bundle_exts,
+        &crate::age::SystemAge,
+    )
+    .ok()?
+    {
         Inspect::Candidate(file) => Some(file.size),
         Inspect::Skip(_) | Inspect::Outside | Inspect::Gone => None,
     }

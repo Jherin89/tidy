@@ -34,10 +34,18 @@ mk "The-Pragmatic-Programmer.epub"            2900 "120 days ago"
 mk "random-notes.key"                          730 "13 days ago"
 mk "unknown-file.bin"                           12 "1 day ago"
 mk "Figma-agent-installer.zip"                 220 "1 day ago"
+# iWork package: a directory whose extension is on a rule. tidy moves it
+# as one item and never looks inside.
+mkdir -p "$D/Q4-plan.pages/Contents"
+printf '<document/>\n' > "$D/Q4-plan.pages/index.xml"
+printf 'slides\n' > "$D/Q4-plan.pages/Contents/Data"
 # things tidy always skips
 mk "ubuntu-24.04.iso.crdownload"            900000 "1 minute ago"
 mk ".DS_Store"                                   6 "1 day ago"
 mkdir -p "$D/old-projects"
+# touch -d backdates mtime only. Date Added (macOS) and birth stay "now",
+# so Old installers / Old archives will not match these files. That is
+# the v0.3.0 age rule: a copied old .dmg is not old.
 cat <<VARS
 export TIDY_HOME=$DEMO/home
 export TIDY_CONFIG_DIR="$DEMO/home/.config"

@@ -105,14 +105,15 @@ impl Rule {
         }
 
         if let Some(min_age) = self.older_than {
-            let passed = is_older_than(file.modified, now, min_age);
+            let passed = is_older_than(file.age, now, min_age);
             let need = self
                 .older_than_text
                 .clone()
                 .unwrap_or_else(|| format_age(min_age));
-            let detail = match now.duration_since(file.modified) {
-                Ok(age) => format!("{} old, needs ≥ {need}", format_age(age)),
-                Err(_) => format!("modified in the future, needs ≥ {need}"),
+            let source = file.age_kind.as_str();
+            let detail = match now.duration_since(file.age) {
+                Ok(age) => format!("{} old ({source}), needs ≥ {need}", format_age(age)),
+                Err(_) => format!("{source} in the future, needs ≥ {need}"),
             };
             conditions.push(ConditionExplain {
                 name: "older_than",
@@ -247,6 +248,10 @@ impl Ruleset {
     pub fn parse(text: &str) -> Result<Vec<Rule>, String> {
         parse_rules(text)
     }
+
+    pub fn bundle_extensions(&self) -> Vec<String> {
+        bundle_extensions(&self.rules)
+    }
 }
 
 /// Load rules for a run.
@@ -342,6 +347,20 @@ fn parse_rules(text: &str) -> Result<Vec<Rule>, String> {
         rules.push(compile_rule(index, raw)?);
     }
     Ok(rules)
+}
+
+/// Extensions listed on any rule. A directory whose name matches one of
+/// these is a package document and is tidied as a single item.
+pub fn bundle_extensions(rules: &[Rule]) -> Vec<String> {
+    let mut out = Vec::new();
+    for rule in rules {
+        for ext in &rule.extensions {
+            if !out.contains(ext) {
+                out.push(ext.clone());
+            }
+        }
+    }
+    out
 }
 
 fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
@@ -683,12 +702,7 @@ mod tests {
 
     fn entry(name: &str, size: u64, age: Duration) -> FileEntry {
         let now = SystemTime::UNIX_EPOCH + StdDuration::from_secs(1_700_000_000);
-        FileEntry {
-            path: PathBuf::from(name),
-            name: name.to_string(),
-            size,
-            modified: now - age,
-        }
+        FileEntry::new(PathBuf::from(name), name, size, now - age)
     }
 
     fn now() -> SystemTime {
@@ -787,21 +801,17 @@ mod tests {
         let day = StdDuration::from_secs(86400);
         let at = now();
         let none = DuplicateIndex::empty();
-        let hit = FileEntry {
-            path: PathBuf::from("a.pdf"),
-            name: "a.pdf".into(),
-            size: 1000,
-            modified: at - 30 * day,
-        };
+        let hit = FileEntry::new(PathBuf::from("a.pdf"), "a.pdf", 1000, at - 30 * day);
         assert!(rule.matches(&hit, at, &none));
         let why = rule.explain(&hit, at, &none);
         assert!(why.matched);
         assert!(why
             .conditions
             .iter()
-            .any(|c| c.name == "older_than" && c.passed));
+            .any(|c| c.name == "older_than" && c.passed && c.detail.contains("(modified)")));
         let mut too_new = hit.clone();
         too_new.modified = at - 30 * day + StdDuration::from_secs(1);
+        too_new.age = too_new.modified;
         assert!(!rule.matches(&too_new, at, &none));
         let age = rule.explain(&too_new, at, &none);
         let older = age
@@ -811,6 +821,7 @@ mod tests {
             .unwrap();
         assert!(!older.passed);
         assert!(older.detail.contains("needs ≥ 30d"), "{}", older.detail);
+        assert!(older.detail.contains("(modified)"), "{}", older.detail);
         let mut too_small = hit.clone();
         too_small.size = 999;
         assert!(!rule.matches(&too_small, at, &none));
@@ -889,12 +900,7 @@ mod tests {
         let path = folder.join(name);
         std::fs::write(&path, bytes).unwrap();
         let at = now();
-        FileEntry {
-            path,
-            name: name.to_string(),
-            size: bytes.len() as u64,
-            modified: at - age,
-        }
+        FileEntry::new(path, name, bytes.len() as u64, at - age)
     }
 
     #[test]

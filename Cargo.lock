@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "tidy-dl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -959,6 +959,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "globset",
+ "libc",
  "notify-debouncer-mini",
  "predicates",
  "serde",

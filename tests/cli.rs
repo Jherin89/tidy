@@ -113,9 +113,14 @@ fn apply_then_undo_restores_the_folder() {
         Duration::from_secs(86_400),
     );
     write_aged(
-        &dir.join("setup.dmg"),
-        b"old-dmg",
-        Duration::from_secs(40 * 86_400),
+        &dir.join("invoice.pdf"),
+        b"same-bytes",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("invoice (1).pdf"),
+        b"same-bytes",
+        Duration::from_secs(86_400),
     );
     write_aged(
         &dir.join("notes.txt"),
@@ -133,7 +138,6 @@ fn apply_then_undo_restores_the_folder() {
         .stdout(predicate::str::contains("\"mode\": \"applied\""));
 
     assert!(!dir.join("report.pdf").exists());
-    assert!(!dir.join("setup.dmg").exists());
     assert!(!dir.join("notes.txt").exists());
     assert_eq!(
         fs::read(tmp.path().join("home/Documents/PDFs/report.pdf")).unwrap(),
@@ -143,7 +147,10 @@ fn apply_then_undo_restores_the_folder() {
         fs::read(tmp.path().join("home/Documents/Downloads/notes.txt")).unwrap(),
         b"hello"
     );
-    assert!(trash_has(&tmp.path().join("trash"), b"old-dmg"));
+    assert!(
+        trash_has(&tmp.path().join("trash"), b"same-bytes"),
+        "the extra invoice copy should be trashed"
+    );
     assert_eq!(fs::read(dir.join("subdir/inner.txt")).unwrap(), b"stay");
 
     tidy(tmp.path())
@@ -154,10 +161,9 @@ fn apply_then_undo_restores_the_folder() {
         .stdout(predicate::str::contains("restored"));
 
     assert_eq!(fs::read(dir.join("report.pdf")).unwrap(), b"pdf-bytes");
-    assert_eq!(fs::read(dir.join("setup.dmg")).unwrap(), b"old-dmg");
     assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"hello");
     assert!(!tmp.path().join("home/Documents/PDFs/report.pdf").exists());
-    assert!(!trash_has(&tmp.path().join("trash"), b"old-dmg"));
+    assert!(!trash_has(&tmp.path().join("trash"), b"same-bytes"));
 }
 
 #[test]
@@ -261,12 +267,16 @@ fn older_than_flag_filters_before_rules() {
         .iter()
         .map(|entry| entry["file"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(files, vec!["old.pdf".to_string()]);
-    assert!(value["skipped"]
-        .as_array()
-        .unwrap()
+    // Birth/Date Added is now, so a backdated mtime does not make the file old.
+    assert!(
+        files.is_empty(),
+        "just-created files must not pass --older-than 7d: {files:?}"
+    );
+    let skipped = value["skipped"].as_array().unwrap();
+    assert!(skipped
         .iter()
-        .any(|item| item["file"] == "new.pdf"));
+        .any(|item| { item["file"] == "old.pdf" && item["reason"] == "newer than --older-than" }));
+    assert!(skipped.iter().any(|item| item["file"] == "new.pdf"));
 }
 
 #[test]
@@ -574,6 +584,206 @@ fn install_without_a_launchctl_override_explains_that_launchd_is_macos_only() {
         .path()
         .join("home/Library/LaunchAgents/com.github.jherin89.tidy.plist")
         .exists());
+}
+
+#[test]
+fn bundle_is_listed_moved_and_undone() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    let pages = dir.join("Report.pages");
+    fs::create_dir_all(pages.join("Contents")).unwrap();
+    fs::write(pages.join("index.xml"), b"<doc/>").unwrap();
+    fs::write(pages.join("Contents/Data"), b"inside").unwrap();
+    fs::create_dir_all(dir.join("skip-me")).unwrap();
+
+    let stdout = String::from_utf8(
+        tidy(tmp.path())
+            .arg(dir.as_os_str())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(stdout.contains("Report.pages"), "{stdout}");
+    assert!(stdout.contains("Documents"), "{stdout}");
+    assert!(stdout.contains("skip-me"), "{stdout}");
+    assert!(pages.join("Contents/Data").is_file());
+
+    tidy(tmp.path())
+        .args(["--apply"])
+        .arg(&dir)
+        .assert()
+        .success();
+    let dest = tmp.path().join("home/Documents/Downloads/Report.pages");
+    assert!(!pages.exists());
+    assert_eq!(fs::read(dest.join("index.xml")).unwrap(), b"<doc/>");
+    assert_eq!(fs::read(dest.join("Contents/Data")).unwrap(), b"inside");
+    assert!(dir.join("skip-me").is_dir());
+
+    tidy(tmp.path()).arg("undo").assert().success();
+    assert_eq!(fs::read(pages.join("index.xml")).unwrap(), b"<doc/>");
+    assert_eq!(fs::read(pages.join("Contents/Data")).unwrap(), b"inside");
+    assert!(!dest.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn watch_install_print_writes_rules_and_age_into_the_plist() {
+    let tmp = sandbox();
+    let root = tmp.path();
+    let folder = downloads(root);
+    let rules = root.join("custom.toml");
+    fs::write(
+        &rules,
+        r#"
+[[rules]]
+name = "PDFs"
+extensions = ["pdf"]
+action = "move"
+destination = "Filed"
+"#,
+    )
+    .unwrap();
+
+    let printed = tidy(root)
+        .args([
+            "watch",
+            "--install",
+            "--print",
+            "--older-than",
+            "7d",
+            "--rules",
+        ])
+        .arg(&rules)
+        .arg(&folder)
+        .assert()
+        .success();
+    let xml = String::from_utf8(printed.get_output().stdout.clone()).unwrap();
+    assert!(xml.contains("<string>--rules</string>"), "{xml}");
+    assert!(xml.contains("<string>--older-than</string>"), "{xml}");
+    assert!(xml.contains("<string>7d</string>"), "{xml}");
+    let rules_abs = rules.canonicalize().unwrap();
+    assert!(
+        xml.contains(&format!("<string>{}</string>", rules_abs.display())),
+        "{xml}"
+    );
+
+    tidy(root)
+        .args(["watch", "--install", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--json"));
+
+    tidy(root)
+        .args(["--apply", "watch", "--install", "--print"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--apply"));
+}
+
+#[cfg(unix)]
+#[test]
+fn watch_install_persists_flags_and_status_reads_them() {
+    let tmp = sandbox();
+    let root = tmp.path();
+    let log = root.join("launchctl.log");
+    let script = root.join("launchctl");
+    let body = "if [ \"$1\" = print ]; then\ncat <<'EOF'\nstate = running\npid = 7\nlast exit code = 0\nEOF\nfi\nif [ \"$1\" = bootout ]; then\nexit 3\nfi\nexit 0\n";
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}",
+            log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let folder = root.join("inbox & drafts");
+    fs::create_dir_all(&folder).unwrap();
+    let rules = root.join("rules & <mine>.toml");
+    fs::write(
+        &rules,
+        "[[rules]]\nname = \"T\"\nextensions = [\"txt\"]\naction = \"trash\"\n",
+    )
+    .unwrap();
+
+    let mut cmd = tidy(root);
+    cmd.env("TIDY_LAUNCHCTL", &script)
+        .env("TIDY_UID", "501")
+        .args(["watch", "--install", "--older-than", "12h", "--rules"])
+        .arg(&rules)
+        .arg(&folder)
+        .assert()
+        .success();
+
+    let plist = root.join("home/Library/LaunchAgents/com.github.jherin89.tidy.plist");
+    let written = fs::read_to_string(&plist).unwrap();
+    assert!(written.contains("--rules"), "{written}");
+    assert!(written.contains("--older-than"), "{written}");
+    assert!(written.contains("12h"), "{written}");
+    assert!(written.contains("&amp;"), "{written}");
+    assert!(written.contains("&lt;mine&gt;"), "{written}");
+
+    let status = String::from_utf8(
+        tidy(root)
+            .env("TIDY_LAUNCHCTL", &script)
+            .env("TIDY_UID", "501")
+            .args(["watch", "--status"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(status.contains("12h"), "{status}");
+    assert!(status.contains("rules"), "{status}");
+
+    let json = tidy(root)
+        .env("TIDY_LAUNCHCTL", &script)
+        .env("TIDY_UID", "501")
+        .args(["watch", "--status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(json["older_than"], "12h");
+    assert!(json["rules"].as_str().unwrap().contains("rules"));
+}
+
+#[test]
+fn explain_reports_the_age_source() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("Docker.dmg"),
+        b"dmg",
+        Duration::from_secs(5 * 86_400),
+    );
+    let stdout = String::from_utf8(
+        tidy(tmp.path())
+            .args(["explain"])
+            .arg(dir.join("Docker.dmg"))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        stdout.contains("(created)")
+            || stdout.contains("(modified)")
+            || stdout.contains("(date added)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("needs ≥ 30d"), "{stdout}");
 }
 
 fn trash_has(dir: &Path, bytes: &[u8]) -> bool {

@@ -87,12 +87,15 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
                     &env,
                     WatchRequest {
                         path,
+                        rules: rules.or(cli.rules.clone()),
+                        older_than: older_than.or(cli.older_than.clone()),
                         install,
                         uninstall,
                         status,
                         print,
                         force,
                         json: json || cli.json,
+                        apply: cli.apply,
                     },
                 );
             }
@@ -174,23 +177,29 @@ fn explain_cmd(
 
 struct WatchRequest {
     path: Option<PathBuf>,
+    rules: Option<PathBuf>,
+    older_than: Option<String>,
     install: bool,
     uninstall: bool,
     status: bool,
     print: bool,
     force: bool,
     json: bool,
+    apply: bool,
 }
 
 fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
     let WatchRequest {
         path,
+        rules,
+        older_than,
         install,
         uninstall,
         status,
         print,
         force,
         json,
+        apply,
     } = request;
     if print && !install {
         return Err(Error::msg(
@@ -216,11 +225,43 @@ fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
             "pass --install, --uninstall, or --status (`tidy watch --help`)",
         ));
     }
+    if apply {
+        return Err(Error::msg(
+            "`--apply` is not stored in the launchd agent; `tidy watch` always applies",
+        ));
+    }
+    if json && (install || uninstall) {
+        return Err(Error::msg(
+            "`--json` cannot be stored in the launchd agent (its output goes to the log file). Use `tidy watch --status --json`.",
+        ));
+    }
+    if uninstall && (rules.is_some() || older_than.is_some() || path.is_some()) {
+        return Err(Error::msg(
+            "`tidy watch --uninstall` does not take --rules, --older-than, or a folder; those flags belong on --install",
+        ));
+    }
+    if status && (rules.is_some() || older_than.is_some() || path.is_some()) {
+        return Err(Error::msg(
+            "`tidy watch --status` reads the installed plist; it does not take --rules, --older-than, or a folder",
+        ));
+    }
+
+    let program = if install {
+        Some(install_program(path, rules, older_than, env)?)
+    } else {
+        None
+    };
 
     if print {
         let binary = launchd::resolved_tidy_binary()?;
-        let folder = service_folder(path, env)?;
-        let xml = launchd::render_plist(&binary, &folder, &launchd::log_path(&env.home));
+        let program = program.expect("install program");
+        let xml = launchd::render_plist(
+            &binary,
+            &program,
+            &launchd::log_path(&env.home),
+            &launchd::job_label()?,
+            &launchd::snapshot_override_env(),
+        );
         eprintln!("Using binary {}", binary.display());
         print!("{xml}");
         return Ok(0);
@@ -232,10 +273,14 @@ fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
         uid: launchd::current_uid()?,
         launchctl: launchd::launchctl_program(),
         binary: launchd::resolved_tidy_binary()?,
+        label: launchd::job_label()?,
     };
     if install {
-        let folder = service_folder(path, env)?;
-        print!("{}", launchd::install(&paths, &folder, force)?);
+        let program = program.expect("install program");
+        print!(
+            "{}",
+            launchd::install(&paths, &program, &launchd::snapshot_override_env(), force,)?
+        );
         return Ok(0);
     }
     if uninstall {
@@ -252,6 +297,26 @@ fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
         );
     }
     Ok(0)
+}
+
+fn install_program(
+    path: Option<PathBuf>,
+    rules: Option<PathBuf>,
+    older_than: Option<String>,
+    env: &Env,
+) -> Result<launchd::WatchProgram, Error> {
+    if let Some(text) = older_than.as_deref() {
+        parse_duration(text).map_err(|err| Error::msg(format!("--older-than: {err}")))?;
+    }
+    let rules = match rules {
+        Some(path) => Some(launchd::absolute_rules_path(&path)?),
+        None => None,
+    };
+    Ok(launchd::WatchProgram {
+        folder: service_folder(path, env)?,
+        rules,
+        older_than,
+    })
 }
 
 /// Folder embedded in a LaunchAgent. Missing folders are allowed so the agent

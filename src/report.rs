@@ -153,6 +153,8 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
                 "file": action.file.name,
                 "path": action.file.path.display().to_string(),
                 "size": action.file.size,
+                "age_source": action.file.age_kind.as_str(),
+                "bundle": action.file.is_bundle,
                 "rule": action.rule_name,
                 "action": match action.kind {
                     ActionKind::Move => "move",

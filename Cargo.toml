@@ -1,6 +1,6 @@
 [package]
 name = "tidy-dl"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Jordan Herin"]
@@ -35,6 +35,9 @@ thiserror = "=1.0.69"
 toml = "=0.8.23"
 trash = "=5.2.9"
 unicode-width = "=0.2.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.191"
 
 [dev-dependencies]
 assert_cmd = "=2.0.16"
