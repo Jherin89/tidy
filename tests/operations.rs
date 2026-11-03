@@ -865,3 +865,137 @@ fn explain_shows_age_source_in_older_than_detail() {
     let text = tidy::explain::render(&explained, &env, false);
     assert!(text.contains("old ("), "{text}");
 }
+
+#[test]
+fn ubuntu_dmg_folder_is_not_trashed_and_pages_is_still_a_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let dmg = folder.join("Ubuntu.dmg");
+    fs::create_dir_all(dmg.join("payload")).unwrap();
+    fs::write(dmg.join("payload/disk"), b"installer").unwrap();
+    write_aged(
+        &dmg.join("payload/disk"),
+        b"installer",
+        Duration::from_secs(40 * 86400),
+    );
+    let pages = folder.join("Report.pages");
+    fs::create_dir_all(pages.join("Contents")).unwrap();
+    fs::write(pages.join("index.xml"), b"<doc/>").unwrap();
+    fs::write(pages.join("Contents/Data"), b"inside").unwrap();
+
+    let rules = builtin(&env);
+    let plan = plan_aged(&env, &folder, &rules, None, SystemTime::now());
+    assert!(
+        plan.actions
+            .iter()
+            .all(|action| action.file.name != "Ubuntu.dmg"),
+        "a folder named Ubuntu.dmg must not match Old installers"
+    );
+    assert!(plan.skipped.iter().any(|skip| {
+        skip.name == "Ubuntu.dmg" && skip.reason == tidy::scan::SkipReason::FolderNotAFile
+    }));
+    assert!(dmg.is_dir());
+    let action = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "Report.pages")
+        .unwrap();
+    assert!(action.file.is_bundle);
+    assert_eq!(action.file.display_name(), "Report.pages/");
+    assert_eq!(action.rule_name, "Documents");
+
+    let explained =
+        tidy::explain::explain_path_with(&env, &rules, &dmg, SystemTime::now(), &ModifiedOnlyAge)
+            .unwrap();
+    let text = tidy::explain::render(&explained, &env, false);
+    assert!(text.contains("folder, not a file"), "{text}");
+    assert!(text.contains("left in place"), "{text}");
+    assert!(text.contains("Ubuntu.dmg/"), "{text}");
+
+    let pages_explained =
+        tidy::explain::explain_path(&env, &rules, &pages, SystemTime::now()).unwrap();
+    let pages_text = tidy::explain::render(&pages_explained, &env, false);
+    assert!(pages_text.contains("Report.pages/"), "{pages_text}");
+    assert!(pages_text.contains("(package)"), "{pages_text}");
+    assert_eq!(pages_explained.winner(), Some("Documents"));
+    let json: serde_json::Value =
+        serde_json::from_str(&tidy::explain::render_json(&pages_explained).unwrap()).unwrap();
+    assert_eq!(json["bundle"], true);
+    assert_eq!(json["kind"], "package");
+}
+
+struct SittingVsCopied;
+
+impl tidy::age::AgeProbe for SittingVsCopied {
+    fn probe(&self, path: &Path, meta: &std::fs::Metadata) -> tidy::age::FileTimes {
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if path.file_name().and_then(|n| n.to_str()) == Some("invoice (1).pdf") {
+            tidy::age::FileTimes {
+                modified,
+                created: Some(SystemTime::now()),
+                added: None,
+            }
+        } else {
+            tidy::age::FileTimes {
+                modified,
+                created: Some(modified),
+                added: None,
+            }
+        }
+    }
+}
+
+#[test]
+fn duplicate_keeper_is_the_copy_that_has_been_in_the_folder_longest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-bytes",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-bytes",
+        Duration::from_secs(40 * 86400),
+    );
+    let rules = builtin(&env);
+    let now = SystemTime::now();
+    let plan = plan_folder_with(&env, &folder, &rules, None, now, &SittingVsCopied).unwrap();
+    let extra = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice (1).pdf")
+        .unwrap();
+    assert_eq!(extra.rule_name, "Duplicates");
+    assert_eq!(extra.copy_of.as_deref(), Some("invoice.pdf"));
+    let keeper = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice.pdf")
+        .unwrap();
+    assert_eq!(keeper.rule_name, "PDFs");
+
+    let extra_explained = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("invoice (1).pdf"),
+        now,
+        &SittingVsCopied,
+    )
+    .unwrap();
+    assert_eq!(extra_explained.winner(), Some("Duplicates"));
+    let keeper_explained = tidy::explain::explain_path_with(
+        &env,
+        &rules,
+        &folder.join("invoice.pdf"),
+        now,
+        &SittingVsCopied,
+    )
+    .unwrap();
+    assert_eq!(keeper_explained.winner(), Some("PDFs"));
+    let text = tidy::explain::render(&keeper_explained, &env, false);
+    assert!(text.contains("longest") || text.contains("PDFs"), "{text}");
+}

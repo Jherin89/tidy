@@ -13,7 +13,8 @@ use clap::{Parser, Subcommand};
     after_help = "\
 By default tidy only prints a preview. Pass --apply to move files and send matches to the Trash.\n\
 Run `tidy init` to write an editable rules file, `tidy rules` to see which rules are active,\n\
-and `tidy explain FILE` to see why one file matched.",
+`tidy explain FILE` to see why one file matched, and `tidy schedule --install`
+to run `tidy --apply` once a day (opt-in, off by default).",
     propagate_version = true
 )]
 pub struct Cli {
@@ -132,6 +133,42 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Install an optional daily `tidy --apply` job (macOS launchd).
+    ///
+    /// Off by default. Nothing is installed until `--install`. Each run
+    /// writes a normal undo log, so `tidy undo` reverses it. Distinct from
+    /// `tidy watch`: this fires once a day instead of watching continuously.
+    Schedule {
+        /// Folder to tidy. Defaults to ~/Downloads.
+        path: Option<PathBuf>,
+        /// Use this rules file instead of the one in the config directory.
+        #[arg(long, value_name = "FILE")]
+        rules: Option<PathBuf>,
+        /// Only consider files this old (Date Added on macOS).
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+        /// Local time to run, `HH:MM`. Default 10:00.
+        #[arg(long, value_name = "HH:MM")]
+        at: Option<String>,
+        /// Register a launchd agent that runs `tidy --apply` once a day (macOS).
+        #[arg(long)]
+        install: bool,
+        /// Unload the daily launchd agent and delete its plist.
+        #[arg(long)]
+        uninstall: bool,
+        /// Show whether the daily launchd agent is installed and loaded.
+        #[arg(long)]
+        status: bool,
+        /// Print the launchd plist and exit. No files are written.
+        #[arg(long)]
+        print: bool,
+        /// Replace an existing launchd plist.
+        #[arg(long)]
+        force: bool,
+        /// With `--status`, print JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]
@@ -208,6 +245,36 @@ mod tests {
                 print: true,
                 ..
             })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "tidy",
+            "schedule",
+            "--install",
+            "--at",
+            "09:30",
+            "--older-than",
+            "30d",
+            "/tmp/inbox",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule {
+                install: true,
+                at: Some(ref at),
+                ref older_than,
+                path: Some(ref folder),
+                ..
+            }) if at == "09:30"
+                && older_than.as_deref() == Some("30d")
+                && folder == &PathBuf::from("/tmp/inbox")
+        ));
+
+        let cli = Cli::try_parse_from(["tidy", "schedule", "--print"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Schedule { print: true, .. })
         ));
     }
 

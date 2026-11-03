@@ -54,6 +54,40 @@ pub fn parse_size(input: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("size `{input}` is too large"))
 }
 
+/// Parse a local clock time `HH:MM` (`10:00`, `9:30`). Hours 0-23, minutes 0-59.
+pub fn parse_clock(input: &str) -> Result<(u8, u8), String> {
+    let s = input.trim();
+    let Some((hour_text, minute_text)) = s.split_once(':') else {
+        return Err(format!("time `{input}` must be HH:MM (for example 10:00)"));
+    };
+    if hour_text.is_empty()
+        || hour_text.len() > 2
+        || minute_text.len() != 2
+        || !hour_text.chars().all(|c| c.is_ascii_digit())
+        || !minute_text.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(format!("time `{input}` must be HH:MM (for example 10:00)"));
+    }
+    let hour: u8 = hour_text
+        .parse()
+        .map_err(|_| format!("time `{input}` must be HH:MM (for example 10:00)"))?;
+    let minute: u8 = minute_text
+        .parse()
+        .map_err(|_| format!("time `{input}` must be HH:MM (for example 10:00)"))?;
+    if hour > 23 {
+        return Err(format!("time `{input}` has hour {hour}; use 00-23"));
+    }
+    if minute > 59 {
+        return Err(format!("time `{input}` has minute {minute}; use 00-59"));
+    }
+    Ok((hour, minute))
+}
+
+/// `10:00` from hour and minute.
+pub fn format_clock(hour: u8, minute: u8) -> String {
+    format!("{hour:02}:{minute:02}")
+}
+
 /// Compact age such as `5d 3h`, `3h 4m`, `4m 2s`, or `9s`.
 ///
 /// Zero components are left out. Days and hours are the pair `tidy explain`
@@ -198,6 +232,21 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(90)), "1m 30s");
         assert_eq!(format_age(Duration::from_secs(9)), "9s");
         assert_eq!(format_age(Duration::ZERO), "0s");
+    }
+
+    #[test]
+    fn parses_clock_times() {
+        assert_eq!(parse_clock("10:00").unwrap(), (10, 0));
+        assert_eq!(parse_clock("9:30").unwrap(), (9, 30));
+        assert_eq!(parse_clock(" 00:00 ").unwrap(), (0, 0));
+        assert_eq!(parse_clock("23:59").unwrap(), (23, 59));
+        assert_eq!(format_clock(10, 0), "10:00");
+        assert_eq!(format_clock(9, 5), "09:05");
+        for bad in [
+            "", "10", "10:0", "25:00", "10:60", "10:00:00", "aa:bb", ":00", "10:",
+        ] {
+            assert!(parse_clock(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

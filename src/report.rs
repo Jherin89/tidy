@@ -9,7 +9,6 @@ use crate::env::{contract_home, Env};
 use crate::error::Error;
 use crate::parse::format_size;
 use crate::plan::{ActionKind, ActionStatus, Plan};
-use crate::scan::SkipReason;
 use crate::undo::{UndoOutcome, UndoReport};
 
 pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
@@ -40,11 +39,17 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
     if !plan.unmatched.is_empty() {
         out.push('\n');
         line(&mut out, &dye("Unmatched  (left in place)", color, "1"));
-        let col = list_width(plan.unmatched.iter().take(20).map(|f| f.name.as_str()));
-        for file in plan.unmatched.iter().take(20) {
+        let unmatched_names: Vec<String> = plan
+            .unmatched
+            .iter()
+            .take(20)
+            .map(|f| f.display_name())
+            .collect();
+        let col = list_width(unmatched_names.iter().map(String::as_str));
+        for (file, name) in plan.unmatched.iter().zip(&unmatched_names) {
             line(
                 &mut out,
-                &format!("  {} {}", pad(&file.name, col), format_size(file.size)),
+                &format!("  {} {}", pad(name, col), format_size(file.size)),
             );
         }
         if plan.unmatched.len() > 20 {
@@ -62,10 +67,7 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
             .skipped
             .iter()
             .take(20)
-            .map(|skip| match skip.reason {
-                SkipReason::Directory => format!("{}/", skip.name),
-                _ => skip.name.clone(),
-            })
+            .map(|skip| skip.display_name())
             .collect();
         let col = list_width(names.iter().map(String::as_str));
         for (skip, name) in plan.skipped.iter().zip(&names) {
@@ -180,6 +182,7 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
                 "file": file.name,
                 "path": file.path.display().to_string(),
                 "size": file.size,
+                "bundle": file.is_bundle,
             })
         })
         .collect();
@@ -357,7 +360,7 @@ fn render_table(plan: &Plan, color: bool) -> String {
                 action_name
             };
             [
-                action.file.name.clone(),
+                action.file.display_name(),
                 action.rule_name.clone(),
                 action_name.to_string(),
                 action.destination_display.clone(),

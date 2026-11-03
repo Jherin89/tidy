@@ -1,9 +1,11 @@
 //! Byte-identical extra copies among the eligible files of one folder.
 //!
 //! Only files that share a size are hashed. Zero-byte files are never
-//! duplicates. The keeper of each group is the oldest file, then the shortest
-//! name, then the lexicographic name. Every other member is an extra copy of
-//! that keeper. The keeper itself is not a duplicate.
+//! duplicates. The keeper of each group is the copy that has been in the
+//! folder longest (same age stamp as the 30-day rules: Date Added on macOS,
+//! otherwise the later of created and modified), then the shortest name,
+//! then the lexicographic name. Every other member is an extra copy of that
+//! keeper. The keeper itself is not a duplicate.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -65,8 +67,8 @@ impl DuplicateIndex {
                 }
                 let mut ordered = same;
                 ordered.sort_by(|a, b| {
-                    a.modified
-                        .cmp(&b.modified)
+                    a.age
+                        .cmp(&b.age)
                         .then_with(|| name_len(&a.name).cmp(&name_len(&b.name)))
                         .then_with(|| a.name.cmp(&b.name))
                 });
@@ -260,5 +262,27 @@ mod tests {
         let index = DuplicateIndex::build(folder, &files).unwrap();
         assert!(index.keeper_of(&files[0].path).is_none());
         assert!(!index.is_keeper(&files[0].path));
+    }
+
+    #[test]
+    fn just_copied_twin_with_old_mtime_is_trashed_sitting_copy_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path();
+        let day = Duration::from_secs(86_400);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        // Sitting copy: old mtime and old age (it has been here).
+        let sitting = touch(folder, "invoice.pdf", b"same-bytes", 40 * day);
+        // Just-copied twin: Finder preserved the old mtime, but Date Added
+        // / created is now, so it is the extra copy.
+        let mut copied = touch(folder, "invoice (1).pdf", b"same-bytes", 40 * day);
+        copied.age = now;
+        copied.age_kind = crate::age::AgeKind::DateAdded;
+        let index = DuplicateIndex::build(folder, &[sitting, copied]).unwrap();
+        assert!(index.is_keeper(&folder.join("invoice.pdf")));
+        assert_eq!(
+            index.keeper_of(&folder.join("invoice (1).pdf")),
+            Some("invoice.pdf")
+        );
+        assert!(!index.is_keeper(&folder.join("invoice (1).pdf")));
     }
 }

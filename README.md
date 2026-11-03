@@ -57,12 +57,13 @@ tidy works the other way around:
 - **Preview table by default.** Shows file, matched rule, action, destination, and size, plus totals per rule and per action.
 - **Rules that match on extension, name pattern, age, size, and duplicate copies**, combined however you like. The first matching rule wins.
 - **Age from Date Added on a Mac.** `older_than` uses Finder's Date Added when it is available, otherwise the later of created (birth) and modified. A `.dmg` you just copied into Downloads is not old, even if its modified time is months ago. `tidy explain` shows which stamp it used.
-- **Package documents as one item.** iWork files (`.pages`, `.numbers`, `.key`), `.rtfd`, and any other directory whose extension is listed on a matching rule are moved or trashed as a whole. Other folders are still skipped.
+- **Package documents as one item.** Only iWork / TextEdit packages (`.pages`, `.numbers`, `.key`, `.rtfd`) are moved or trashed as a whole. Other folders are left alone, even when the name looks like a file (`Ubuntu.dmg`, `Vacation.png`). Preview marks packages with a trailing `/`.
 - **Two actions:** move to any folder (created when needed, with `~` expansion and optional `YYYY-MM` subfolders), or send to the system **Trash**.
 - **Sensible built-in rules**, so it works with no setup. The first rule sends extra byte-identical copies to the Trash. Run `tidy init` to get an editable copy.
 - **`tidy explain FILE`** shows why that file would be skipped, matched, or left in place.
 - **Undo log** for every applied run, and `tidy undo` to reverse the latest one.
 - **Watch mode:** `tidy watch` sorts new downloads as soon as they finish. On a Mac, `tidy watch --install` registers a login agent and stores `--rules` / `--older-than` in the plist.
+- **Optional daily job:** `tidy schedule --install` runs `tidy --apply` once a day (default 10:00). Off until you install it. Distinct from watch, and `tidy undo` still works.
 - **Skips files that aren't finished or aren't yours to move:** partial downloads (`.crdownload`, `.part`, `.download`, `.tmp`, `.partial`), hidden files like `.DS_Store`, ordinary folders, and symlinks.
 - **`--json` output** for scripts and automations.
 - **A single small binary.** No runtime and no background service unless you set one up.
@@ -83,8 +84,8 @@ tidy is built so that the worst outcome of a bad rule is a few files in the wron
 | **Never overwrites** | If `invoice.pdf` already exists at the destination, the new one becomes `invoice (1).pdf`, then `invoice (2).pdf`, and so on. Existing files are never replaced. |
 | **Undo** | Every `--apply` (and every watch batch) writes a JSON log. `tidy undo` moves files back to where they were and removes the now-empty folders the run created. Folders that held something before the run, or that you've put something in since, are left alone. |
 | **Careful cross-disk moves** | When source and destination are on different disks, tidy copies, checks the size, and only then removes the original. |
-| **Leaves partial files alone** | In-progress downloads, hidden files, ordinary folders, and symlinks are never touched. A directory whose extension is listed on a matching rule (a `.pages` package, for example) is one item and is never recursed into. |
-| **One config file tidy deletes** | `tidy watch --uninstall` removes the LaunchAgent plist tidy wrote (`~/Library/LaunchAgents/com.github.jherin89.tidy.plist`). That is tidy's own agent file, not a download. |
+| **Leaves partial files alone** | In-progress downloads, hidden files, ordinary folders, and symlinks are never touched. Only `.pages`, `.numbers`, `.key`, and `.rtfd` packages are one item and are never recursed into. A folder named `Ubuntu.dmg` is skipped. |
+| **One kind of config file tidy deletes** | `tidy watch --uninstall` and `tidy schedule --uninstall` each remove only the LaunchAgent plist tidy wrote for that agent. Those are tidy's own agent files, not downloads. |
 
 > [!IMPORTANT]
 > **macOS Trash caveat.** On macOS, apps can put files *into* the Trash but there is no supported way to take them back *out* programmatically. So on a Mac, `tidy undo` moves every *moved* file back automatically, but for *trashed* files it prints each file name and its original location so you can drag them back from the Trash (or select them in Finder and choose **File → Put Back**). On Linux and Windows, trashed files are restored automatically.
@@ -106,51 +107,51 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
    This adds the [jherin89/tap](https://github.com/Jherin89/homebrew-tap) tap and installs the prebuilt binary: universal on macOS, static musl on Linux. Each download is checked against a pinned SHA-256.
 4. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.3.0
+   tidy --version     # → tidy 0.4.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-5. **Later:** `brew upgrade tidy` updates it, and `brew uninstall tidy` removes it. If you set up the background watcher, run `tidy watch --uninstall` first.
+5. **Later:** `brew upgrade tidy` updates it, and `brew uninstall tidy` removes it. If you set up the background watcher or daily job, run `tidy watch --uninstall` and `tidy schedule --uninstall` first.
 
 ### Option B: download a release archive
 
 1. **Download** the archive for your machine from the [latest release](https://github.com/Jherin89/tidy/releases/latest):
-   - Mac (Apple Silicon or Intel): `tidy-0.3.0-universal-apple-darwin.tar.gz`
-   - Linux x86_64: `tidy-0.3.0-x86_64-unknown-linux-musl.tar.gz`
-   - Linux aarch64: `tidy-0.3.0-aarch64-unknown-linux-musl.tar.gz`
+   - Mac (Apple Silicon or Intel): `tidy-0.4.0-universal-apple-darwin.tar.gz`
+   - Linux x86_64: `tidy-0.4.0-x86_64-unknown-linux-musl.tar.gz`
+   - Linux aarch64: `tidy-0.4.0-aarch64-unknown-linux-musl.tar.gz`
 2. **Open Terminal.**
 3. **Optional: check the download.** Compare this output with the `.sha256` file on the release page (`shasum -a 256` writes `hash  filename`):
    ```bash
    cd ~/Downloads
-   shasum -a 256 tidy-0.3.0-universal-apple-darwin.tar.gz
+   shasum -a 256 tidy-0.4.0-universal-apple-darwin.tar.gz
    ```
 4. **Unpack it** (use the name you downloaded):
    ```bash
-   tar -xzf tidy-0.3.0-universal-apple-darwin.tar.gz
+   tar -xzf tidy-0.4.0-universal-apple-darwin.tar.gz
    ```
 5. **On a Mac, remove the quarantine flag.** The binary isn't notarized, so without this step macOS says it "cannot be opened because the developer cannot be verified":
    ```bash
-   xattr -d com.apple.quarantine tidy-0.3.0-universal-apple-darwin/tidy
+   xattr -d com.apple.quarantine tidy-0.4.0-universal-apple-darwin/tidy
    ```
    If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step.
 6. **Put `tidy` on your PATH.** Choose one:
    - **For your user only (no password needed):**
      ```bash
      mkdir -p ~/.local/bin
-     mv tidy-0.3.0-universal-apple-darwin/tidy ~/.local/bin/
+     mv tidy-0.4.0-universal-apple-darwin/tidy ~/.local/bin/
      echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
      source ~/.zshrc
      ```
    - **System-wide (asks for your password):**
      ```bash
      sudo mkdir -p /usr/local/bin
-     sudo mv tidy-0.3.0-universal-apple-darwin/tidy /usr/local/bin/
+     sudo mv tidy-0.4.0-universal-apple-darwin/tidy /usr/local/bin/
      ```
 7. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.3.0
+   tidy --version     # → tidy 0.4.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.3.0-*`
+8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.4.0-*`
 
 ### Option C: build from source with Rust (any Mac, Linux, or Windows)
 
@@ -193,7 +194,7 @@ IMG_4821.HEIC                            Images        move    ~/Pictures/Downlo
 invoice-2026-03 (1).pdf                  Duplicates    trash   Trash (copy of invoice-2026-03.pdf)                                     188 KB
 invoice-2026-03.pdf                      PDFs          move    ~/Documents/PDFs/invoice-2026-03.pdf                                    188 KB
 Q3-pipeline-forecast.xlsx                Spreadsheets  move    ~/Documents/Spreadsheets/Q3-pipeline-forecast.xlsx                      349 KB
-Q4-plan.pages                            Documents     move    ~/Documents/Downloads/Q4-plan.pages                                     19 B
+Q4-plan.pages/                           Documents     move    ~/Documents/Downloads/Q4-plan.pages                                     19 B
 Screenshot 2026-10-01 at 9.14.22 AM.png  Screenshots   move    ~/Pictures/Screenshots/2026-10/Screenshot 2026-10-01 at 9.14.22 AM.png  500 KB
 
 Summary
@@ -208,6 +209,7 @@ Unmatched  (left in place)
 ...
 Skipped
   .DS_Store                   hidden
+  Ubuntu.dmg/                 folder, not a file
   old-projects/               directory
   ubuntu-24.04.iso.crdownload partial download
 
@@ -215,13 +217,13 @@ Dry run. Nothing was changed.
 Re-run with --apply to perform these actions.
 ```
 
-- **file**: a top-level file, or a package directory whose extension is on a matching rule (`.pages`, `.numbers`, `.key`, `.rtfd`). Ordinary subfolders are never entered.
+- **file**: a top-level file, or a document package (`.pages`, `.numbers`, `.key`, `.rtfd`), shown with a trailing `/`. Ordinary subfolders are never entered. A folder named like a file (`Ubuntu.dmg/`) is skipped.
 - **rule**: the first rule that matched it.
 - **action**: `move` (green) or `trash` (yellow).
 - **destination**: where it will go. `~` means your home folder. If a file with that name is already there, you'll see a ` (1)` suffix.
-- **Unmatched** files match no rule and stay where they are. `zoom-installer.pkg` and `Slack-4.41.97-macOS.dmg` have old modified times, but Date Added / created is now, so the 30-day "Old installers" rule does not apply. `Q4-plan.pages` is a package directory and is filed as one Documents item.
-- **Skipped** files are never touched: hidden files, ordinary folders, symlinks, and downloads still in progress.
-- **Duplicate copies** (new in 0.2) show a destination like `Trash (copy of invoice-2026-03.pdf)`. The extra copy goes to the Trash. The original (the oldest copy) stays put and is filed by its normal rule, here **PDFs**.
+- **Unmatched** files match no rule and stay where they are. `zoom-installer.pkg` and `Slack-4.41.97-macOS.dmg` have old modified times, but Date Added / created is now, so the 30-day "Old installers" rule does not apply. `Q4-plan.pages/` is a package directory and is filed as one Documents item.
+- **Skipped** files are never touched: hidden files, ordinary folders, folders named like files, symlinks, and downloads still in progress.
+- **Duplicate copies** show a destination like `Trash (copy of invoice-2026-03.pdf)`. The extra copy goes to the Trash. The original (the copy that has been in the folder longest) stays put and is filed by its normal rule, here **PDFs**.
 
 ### 3. Apply it
 
@@ -353,7 +355,30 @@ tidy explain --rules ./rules.toml ~/Downloads/report.pdf
 
 <p align="center"><img src="docs/explain.png" alt="tidy explain output: Old installers fails older_than because age is 1s (created), not the old mtime" width="100%"></p>
 
-Read-only. tidy evaluates the file as if it were tidying that file's parent folder, using the same matcher as the plan. It first says if the file would be skipped (hidden, partial download, ordinary directory, symlink, missing). Otherwise it prints every condition of each rule with pass or fail, including the real age and which stamp it used (`5d 3h old (date added), needs ≥ 30d`) and, for a duplicate, which file is kept. The first matching rule wins. Later rules are marked "not evaluated". The outcome is the winning rule, action, and destination (with the same collision suffix the plan would choose), or `no rule matches; left in place`. Exit 0 when the file was evaluated, whether or not a rule matched. A missing file or a bad rules file exits nonzero.
+Read-only. tidy evaluates the file as if it were tidying that file's parent folder, using the same matcher as the plan. It first says if the file would be skipped (hidden, partial download, ordinary directory, folder named like a file, symlink, missing). Otherwise it prints every condition of each rule with pass or fail, including the real age and which stamp it used (`5d 3h old (date added), needs ≥ 30d`) and, for a duplicate, which file is kept. Packages are shown with a trailing `/` and a `(package)` label. The first matching rule wins. Later rules are marked "not evaluated". The outcome is the winning rule, action, and destination (with the same collision suffix the plan would choose), or `no rule matches; left in place`. Exit 0 when the file was evaluated, whether or not a rule matched. A missing file or a bad rules file exits nonzero.
+
+### 11. Optional daily cleanup: `tidy schedule`
+
+Watch reacts to new files. A daily job cleans whatever is already sitting in the folder, once a day, using the same rules and the same undo log as `tidy --apply`.
+
+It is **off by default**. Nothing is installed until you run `--install`. Plain `tidy` stays a dry run.
+
+```bash
+tidy schedule --install                              # ~/Downloads at 10:00 local
+tidy schedule --install --at 08:30 --older-than 30d
+tidy schedule --install --rules ~/.config/tidy/rules.toml ~/Desktop
+tidy schedule --print                                # plist to stdout; installs nothing
+tidy schedule --status
+tidy schedule --uninstall                            # bootout, then delete the daily plist
+```
+
+`--install` writes `~/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist` and loads it with `launchctl bootstrap`. The agent runs `tidy --apply` on that folder at `--at HH:MM` (default `10:00`) via `StartCalendarInterval`. **`--rules` (stored as an absolute path) and `--older-than` are written into `ProgramArguments`**, the same way `watch --install` stores them. `RunAtLoad` is false, so it does not fire at login. Logs go to `~/Library/Logs/tidy-daily.log`.
+
+The daily job is a separate agent from watch: different label, plist, and log. Uninstalling one does not touch the other. Each run writes a normal undo log, so `tidy undo` reverses the latest daily (or watch, or manual) apply.
+
+`tidy schedule --install --print` (or `tidy schedule --print`) prints the plist and does nothing else. `--at` must be `HH:MM` with hours 00–23 and minutes 00–59.
+
+**Linux:** launchd is macOS-only. Run `tidy --apply` from a systemd timer or cron instead.
 
 ## Writing rules
 
@@ -416,7 +441,7 @@ action = "move"
 destination = "Archives"                      # → ~/Downloads/Archives/
 ```
 
-**Package documents.** A directory whose name ends with an extension listed on a matching rule is one item. The built-in **Documents** and **Spreadsheets** rules list `.pages`, `.numbers`, `.key`, and `.rtfd`, so those iWork / TextEdit packages are moved as a whole and never recursed into. A folder named `old-projects` still has no listed extension, so it is skipped. `.app` is only a package if you add that extension to a rule. Duplicate detection skips package documents (they are directory trees; hashing them as files would be misleading). Undo restores a moved package as a whole.
+**Package documents.** Only `.pages`, `.numbers`, `.key`, and `.rtfd` directories are one item (case-insensitive). Those iWork / TextEdit packages are moved as a whole and never recursed into. A folder named `old-projects` is skipped. A folder named `Ubuntu.dmg` or `Vacation.png` is also skipped (`folder, not a file`), even if a rule lists that extension. Custom rules cannot promote directories. Duplicate detection skips package documents. Undo restores a moved package as a whole. Preview shows packages with a trailing `/`.
 
 Put specific rules (like *Invoices*) **above** general ones (like *PDFs*), or the general rule will match first.
 
@@ -431,7 +456,7 @@ Put specific rules (like *Invoices*) **above** general ones (like *PDFs*), or th
 
 Within one condition, any value may match (OR). Different conditions must all match (AND). Every rule needs at least one condition.
 
-`duplicate = true` ignores zero-byte files. tidy groups the other eligible files by size, hashes only the sizes that occur more than once (SHA-256, streamed), and keeps one file per hash: oldest modified time, then shortest name, then alphabetical name. Every other file in the group is "a copy of" that keeper. The keeper itself does not match `duplicate = true`, so a later rule can file it. The comparison uses the whole folder, including files that `--older-than` left out of the plan, and including files already in the folder when `tidy watch` sees a new copy.
+`duplicate = true` ignores zero-byte files. tidy groups the other eligible files by size, hashes only the sizes that occur more than once (SHA-256, streamed), and keeps one file per hash: the copy that has been in the folder longest (Date Added on macOS, otherwise the later of created and modified), then shortest name, then alphabetical name. Every other file in the group is "a copy of" that keeper. The keeper itself does not match `duplicate = true`, so a later rule can file it. A just-copied twin that preserved an old mtime is the extra copy. The comparison uses the whole folder, including files that `--older-than` left out of the plan, and including files already in the folder when `tidy watch` sees a new copy.
 
 | Action | Fields | Effect |
 | --- | --- | --- |
@@ -465,7 +490,9 @@ Recent installers and archives are left alone on purpose, because you may still 
 | Rules file | `~/.config/tidy/rules.toml` (also reads `~/Library/Application Support/tidy/rules.toml`) | `~/.config/tidy/rules.toml` (`$XDG_CONFIG_HOME`) | `%APPDATA%\tidy\rules.toml` |
 | Undo logs | `~/Library/Application Support/tidy/logs/` | `~/.local/share/tidy/logs/` | `%APPDATA%\tidy\logs\` |
 | LaunchAgent (macOS) | `~/Library/LaunchAgents/com.github.jherin89.tidy.plist` | — | — |
+| Daily job (macOS) | `~/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist` | — | — |
 | Watch log (macOS) | `~/Library/Logs/tidy.log` | — | — |
+| Daily log (macOS) | `~/Library/Logs/tidy-daily.log` | — | — |
 
 On macOS, tidy prefers `~/.config/tidy/rules.toml` if it exists, otherwise `~/Library/Application Support/tidy/rules.toml`. `--rules FILE` overrides both. `tidy rules` always shows which file is in use.
 
@@ -483,7 +510,8 @@ Undo logs are plain JSON, one file per run (`run-<timestamp>.json`), listing eac
 | `TIDY_WATCH_SETTLE_MS` | How long a watched file's size must stay unchanged (default `2000`). |
 | `TIDY_LAUNCHCTL` | `launchctl` binary. Tests point this at a fake script. On Linux, setting it is what allows `--install` to run. |
 | `TIDY_UID` | User id written into `gui/<uid>/…`. Default is the output of `id -u`. |
-| `TIDY_LAUNCHD_LABEL` | Launchd job label (default `com.github.jherin89.tidy`). The Mac smoke test uses a distinct label so it never clobbers a real agent. |
+| `TIDY_LAUNCHD_LABEL` | Watch launchd job label (default `com.github.jherin89.tidy`). The Mac smoke test uses a distinct label so it never clobbers a real agent. |
+| `TIDY_LAUNCHD_DAILY_LABEL` | Daily-job launchd label (default `com.github.jherin89.tidy.daily`). |
 | `TIDY_TRASH_METHOD` | macOS only. Unset uses Finder (Put Back works). `nsfilemanager` uses `NSFileManager` and is what the headless CI job sets. |
 | `NO_COLOR` / `CLICOLOR_FORCE=1` | Turn color off / force it on even when piped. |
 
@@ -508,6 +536,9 @@ The demo GIF and screenshots were recorded with these variables pointing at a th
 | `tidy watch --install [PATH] [--rules FILE] [--older-than] [--print] [--force]` | Install the macOS launchd agent, storing `--rules` and `--older-than` in the plist. `--print` only writes the plist to stdout. |
 | `tidy watch --status [--json]` | Show the agent, the watched folder, configured arguments, and the last log lines. |
 | `tidy watch --uninstall` | Unload the agent and delete its plist. |
+| `tidy schedule --install [PATH] [--rules FILE] [--older-than] [--at HH:MM] [--print] [--force]` | Install the optional daily `tidy --apply` job (default 10:00). `--print` only writes the plist to stdout. |
+| `tidy schedule --status [--json]` | Show the daily agent, folder, time, and configured arguments. |
+| `tidy schedule --uninstall` | Unload the daily agent and delete its plist. Does not touch the watch agent. |
 | `tidy --help`, `tidy --version` | Help and version. |
 
 `tidy config --init` and `tidy config --show` still work and stay hidden from help. Prefer `tidy init` and `tidy rules`.
@@ -519,14 +550,15 @@ The demo GIF and screenshots were recorded with these variables pointing at a th
 What it does, in order, each step printing `PASS` or `FAIL`:
 
 1. Locate the `tidy` binary: `TIDY_BIN` if set, otherwise `tidy` on `PATH` (skipping HTML Tidy), otherwise `./target/release/tidy`, otherwise `cargo build --release`.
-2. Create sample files in the temp folder, including a `.dmg` with an old modified time (must **not** be planned for trash, because Date Added / created is now) and an iWork-style package (`Quarterly.pages/` with files inside).
-3. Dry-run: the package is listed as one item; an unlisted folder `skip-me/` is skipped and not recursed into.
+2. Create sample files in the temp folder, including a `.dmg` with an old modified time (must **not** be planned for trash, because Date Added / created is now), an iWork-style package (`Quarterly.pages/` with files inside), and a folder named `Ubuntu.dmg/` (must be skipped).
+3. Dry-run: the package is listed as one item with a trailing `/`; an unlisted folder `skip-me/` is skipped; `Ubuntu.dmg/` is skipped as `folder, not a file`.
 4. `--apply` moves the whole `.pages` folder with contents intact; `tidy undo` restores it.
-5. `tidy watch --install --print --rules … --older-than 7d` includes those flags in the plist.
+5. `tidy watch --install --print --rules … --older-than 7d` includes those flags in the plist. `tidy schedule --print --rules … --older-than 7d --at 10:00` includes `--apply`, `StartCalendarInterval`, and a distinct daily label.
 6. On macOS only: Finder-method trash of one uniquely named temp file, then `tidy undo` (names it for **Put Back**) and a restore from Trash.
 7. On macOS only: `tidy watch --install` with **real** `launchctl`, a temp watch folder, and a temp rules file, using the distinct label `com.github.jherin89.tidy.smoke`. `launchctl print gui/$UID/<label>` must show it loaded. A file dropped into the watch folder is filed. A real tidy agent under the default label is left alone.
+8. On macOS only: `tidy schedule --install` with a distinct daily smoke label, then `--status` and `--uninstall`. The watch smoke agent is left alone.
 
-Isolation: `TIDY_HOME`, `TIDY_CONFIG_DIR`, `TIDY_DATA_DIR`, and `TIDY_LAUNCHD_LABEL` all point at the temp dir / smoke label. `HOME` is not overridden, so Finder Trash and `launchctl` still belong to the real user. The EXIT trap uninstalls the smoke agent, deletes the temp dir, and removes from `~/.Trash` only the uniquely named file this script created.
+Isolation: `TIDY_HOME`, `TIDY_CONFIG_DIR`, `TIDY_DATA_DIR`, `TIDY_LAUNCHD_LABEL`, and `TIDY_LAUNCHD_DAILY_LABEL` all point at the temp dir / smoke labels. `HOME` is not overridden, so Finder Trash and `launchctl` still belong to the real user. The EXIT trap uninstalls the smoke agents, deletes the temp dir, and removes from `~/.Trash` only the uniquely named file this script created.
 
 How to run:
 
@@ -560,7 +592,7 @@ The folder you put it in isn't on your PATH. For `~/.local/bin`: `echo 'export P
 
 <details><summary><b><code>bad CPU type in executable</code></b></summary>
 
-You unpacked a single-architecture build on the other Mac chip. The 0.3 release archive `tidy-0.3.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
+You unpacked a single-architecture build on the other Mac chip. The 0.4 release archive `tidy-0.4.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
 </details>
 
 <details><summary><b><code>Operation not permitted</code> when reading ~/Downloads</b></summary>
@@ -570,7 +602,7 @@ macOS Privacy & Security is blocking access. Grant **Full Disk Access** (or **Fi
 
 <details><summary><b>Why did two copies of the same file go to different places?</b></summary>
 
-The oldest copy is the keeper and follows the normal rules (a PDF is filed under PDFs). Every other byte-identical copy matches **Duplicates** and goes to the Trash, shown as `Trash (copy of <keeper>)`. `tidy explain` on each file prints that decision. Zero-byte files are never treated as duplicates.
+The copy that has been in the folder longest is the keeper and follows the normal rules (a PDF is filed under PDFs). Every other byte-identical copy matches **Duplicates** and goes to the Trash, shown as `Trash (copy of <keeper>)`. A just-copied twin that preserved an old mtime is the extra copy. `tidy explain` on each file prints that decision. Zero-byte files are never treated as duplicates.
 </details>
 
 <details><summary><b>Why wasn't a file moved?</b></summary>
@@ -585,17 +617,22 @@ Age is Date Added on a Mac, not the file's modified time. A disk image you copie
 
 <details><summary><b>Why did my .pages document stay put / get moved as a folder?</b></summary>
 
-`.pages`, `.numbers`, `.key`, and `.rtfd` are packages: directories the Finder presents as one document. If that extension is listed on a matching rule, tidy treats the directory as one item and moves or trashes it whole. Other folders are still skipped. Duplicate detection skips packages. `tidy undo` restores a moved package with its contents intact.
+`.pages`, `.numbers`, `.key`, and `.rtfd` are packages: directories the Finder presents as one document. tidy treats those as one item and moves or trashes them whole. Other folders are always skipped, including a folder named `Ubuntu.dmg`. Duplicate detection skips packages. `tidy undo` restores a moved package with its contents intact. Preview shows `Report.pages/` so you can tell it is a folder.
 </details>
 
 <details><summary><b><code>tidy watch --install --rules</code> / <code>--older-than</code> seemed to do nothing</b></summary>
 
-In 0.2 those flags were accepted and dropped. In 0.3 they are written into the LaunchAgent's `ProgramArguments`. `tidy watch --status` shows **Rules** and **Age**. `--json` and `--apply` cannot be stored in the agent; the command errors out instead of ignoring them.
+In 0.2 those flags were accepted and dropped. In 0.3 they are written into the LaunchAgent's `ProgramArguments`. `tidy watch --status` shows **Rules** and **Age**. `--json` and `--apply` cannot be stored in the agent; the command errors out instead of ignoring them. The same storage applies to `tidy schedule --install`.
+</details>
+
+<details><summary><b>How is <code>tidy schedule</code> different from <code>tidy watch</code>?</b></summary>
+
+`tidy watch` stays running and files new downloads as they settle. `tidy schedule` is an opt-in daily `tidy --apply` (default 10:00) of whatever is already in the folder. They use different launchd labels and plists, so both can be installed. Neither runs until you `--install`. `tidy undo` reverses the latest apply from either.
 </details>
 
 <details><summary><b>Can tidy delete my files?</b></summary>
 
-No. The only removal action is `trash`, and things in the Trash stay there until *you* empty it. Moves never overwrite. The one file tidy itself deletes is the LaunchAgent plist from `tidy watch --uninstall`.
+No. The only removal action is `trash`, and things in the Trash stay there until *you* empty it. Moves never overwrite. The files tidy itself deletes are the LaunchAgent plists from `tidy watch --uninstall` and `tidy schedule --uninstall`.
 </details>
 
 <details><summary><b>I emptied the Trash. Can undo bring files back?</b></summary>
@@ -605,7 +642,7 @@ No. Once the Trash is emptied, the files are gone. The default trash rules targe
 
 <details><summary><b>Does it look inside subfolders?</b></summary>
 
-No. Only top-level files, plus package directories whose extension is listed on a matching rule (moved as one item, never recursed into). Subfolders tidy created, like `Archives`, are never entered.
+No. Only top-level files, plus `.pages` / `.numbers` / `.key` / `.rtfd` packages (moved as one item, never recursed into). Subfolders tidy created, like `Archives`, are never entered. A folder named like a file is skipped.
 </details>
 
 <details><summary><b>Why is the crate called <code>tidy-dl</code>?</b></summary>
@@ -626,7 +663,7 @@ cargo test
 ```
 
 - The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically. New dependencies must build on that compiler.
-- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads, Trash, or `launchctl`. Please keep it that way. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plist.
+- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads, Trash, or `launchctl`. Please keep it that way. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plists (watch and daily).
 - On a Mac, `scripts/mac-smoke-test.sh` is the isolated real-`launchctl` / Finder check. It uses `TIDY_LAUNCHD_LABEL` and a temp folder; do not point it at `~/Downloads`.
 - CI runs fmt, clippy, and tests on Ubuntu and macOS 14. The macOS job lints `tidy watch --install --print` (including `--rules` / `--older-than`) with `plutil` and runs a real-Trash test only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
 - Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`), attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists.

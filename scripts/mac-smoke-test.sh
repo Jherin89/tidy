@@ -22,8 +22,10 @@ FAILURES=()
 
 WORK=""
 INSTALLED=0
+DAILY_INSTALLED=0
 BIN=""
 SMOKE_LABEL="com.github.jherin89.tidy.smoke"
+SMOKE_DAILY_LABEL="com.github.jherin89.tidy.daily.smoke"
 PUTBACK_NAME=""
 USER_HOME="${HOME}"
 REAL_TRASH="${HOME}/.Trash"
@@ -117,6 +119,10 @@ remove_our_trash_item() {
 
 cleanup() {
   set +e
+  if [[ "$DAILY_INSTALLED" -eq 1 && -n "$BIN" ]]; then
+    "$BIN" schedule --uninstall >/dev/null 2>&1
+    DAILY_INSTALLED=0
+  fi
   if [[ "$INSTALLED" -eq 1 && -n "$BIN" ]]; then
     "$BIN" watch --uninstall >/dev/null 2>&1
     INSTALLED=0
@@ -149,6 +155,7 @@ export TIDY_HOME="$HOME_DIR"
 export TIDY_CONFIG_DIR="$CONFIG_DIR"
 export TIDY_DATA_DIR="$DATA_DIR"
 export TIDY_LAUNCHD_LABEL="$SMOKE_LABEL"
+export TIDY_LAUNCHD_DAILY_LABEL="$SMOKE_DAILY_LABEL"
 export TIDY_WATCH_SETTLE_MS="400"
 export NO_COLOR="1"
 # Never override HOME: Finder Trash and launchctl belong to the real user.
@@ -159,6 +166,7 @@ unset TIDY_FAKE_TRASH || true
 
 printf 'Work dir  %s\n' "$WORK"
 printf 'Label     %s\n' "$SMOKE_LABEL"
+printf 'Daily     %s\n' "$SMOKE_DAILY_LABEL"
 printf 'User home %s (untouched Downloads)\n' "$USER_HOME"
 
 # --- 1. locate tidy ------------------------------------------------------
@@ -190,6 +198,10 @@ printf 'payload' >"${PAGES}/Contents/Data"
 SKIP_DIR="${INBOX}/skip-me"
 mkdir -p "${SKIP_DIR}/inside"
 printf 'nope' >"${SKIP_DIR}/inside/notes.txt"
+
+FAKE_DMG_DIR="${INBOX}/Ubuntu.dmg"
+mkdir -p "${FAKE_DMG_DIR}/payload"
+printf 'not-a-disk-image' >"${FAKE_DMG_DIR}/payload/disk"
 
 PDF="${INBOX}/memo.pdf"
 printf 'pdf-bytes' >"$PDF"
@@ -270,6 +282,19 @@ else
   fail "unlisted folder was moved or removed"
 fi
 
+if printf '%s' "$DRY" | grep -q 'Ubuntu.dmg' && printf '%s' "$DRY" | grep -q 'folder, not a file'; then
+  pass "folder named Ubuntu.dmg is skipped as folder, not a file"
+else
+  fail "Ubuntu.dmg/ folder was not skipped as folder, not a file"
+  printf '%s\n' "$DRY"
+fi
+
+if [[ -d "$FAKE_DMG_DIR" ]]; then
+  pass "Ubuntu.dmg/ folder was left in place"
+else
+  fail "Ubuntu.dmg/ folder was moved or removed"
+fi
+
 if [[ -f "$DMG" ]]; then
   pass ".dmg stayed in the inbox"
 else
@@ -300,6 +325,25 @@ if "$BIN" watch --install --print --json "$INBOX" >/dev/null 2>&1; then
   fail "watch --install --print --json should be rejected"
 else
   pass "watch --install rejects --json"
+fi
+
+# --- 5b. schedule --print honors flags (any OS) --------------------------
+SCHEDULE_PRINTED="$("$BIN" schedule --print --rules "$WATCH_RULES" --older-than 7d --at 10:00 "$INBOX" 2>/dev/null || true)"
+if printf '%s' "$SCHEDULE_PRINTED" | grep -q -- '--apply' \
+  && printf '%s' "$SCHEDULE_PRINTED" | grep -q -- '--rules' \
+  && printf '%s' "$SCHEDULE_PRINTED" | grep -q -- '--older-than' \
+  && printf '%s' "$SCHEDULE_PRINTED" | grep -q '<string>7d</string>' \
+  && printf '%s' "$SCHEDULE_PRINTED" | grep -q '<key>StartCalendarInterval</key>' \
+  && printf '%s' "$SCHEDULE_PRINTED" | grep -q "$SMOKE_DAILY_LABEL"; then
+  pass "schedule --print writes --apply, --rules, --older-than, and calendar interval"
+else
+  fail "schedule --print dropped flags, calendar interval, or daily label"
+fi
+
+if printf '%s' "$SCHEDULE_PRINTED" | grep -q '<string>watch</string>'; then
+  fail "schedule --print used the watch program"
+else
+  pass "schedule --print is not a watch agent"
 fi
 
 # --- 6. Finder-method trash + undo (macOS) -------------------------------
@@ -453,6 +497,62 @@ else
   skip "watch --install with real launchctl (needs macOS)"
   skip "launchctl print gui/\$UID/<label> (needs macOS)"
   skip "drop a file into the watched folder (needs macOS)"
+fi
+
+# --- 8. real launchd daily job (macOS) -----------------------------------
+if [[ "$IS_DARWIN" -eq 1 ]]; then
+  UID_NUM="$(id -u)"
+  DEFAULT_DAILY="gui/${UID_NUM}/com.github.jherin89.tidy.daily"
+  if launchctl print "$DEFAULT_DAILY" >/dev/null 2>&1; then
+    printf '[warn] a real tidy daily agent is loaded at %s; this test uses %s and will not touch it\n' \
+      "$DEFAULT_DAILY" "$SMOKE_DAILY_LABEL"
+  fi
+  SMOKE_DAILY_TARGET="gui/${UID_NUM}/${SMOKE_DAILY_LABEL}"
+  if launchctl print "$SMOKE_DAILY_TARGET" >/dev/null 2>&1; then
+    fail "smoke daily launchd label ${SMOKE_DAILY_LABEL} is already loaded; refusing to clobber it"
+  else
+    SCHEDULE_DIR="${WORK}/schedulebox"
+    mkdir -p "$SCHEDULE_DIR"
+    if "$BIN" schedule --install --rules "$WATCH_RULES" --older-than 7d --at 10:00 "$SCHEDULE_DIR"; then
+      DAILY_INSTALLED=1
+      pass "schedule --install loaded the smoke daily agent"
+    else
+      fail "schedule --install failed"
+    fi
+
+    DAILY_STATUS="$("$BIN" schedule --status 2>&1 || true)"
+    if printf '%s' "$DAILY_STATUS" | grep -q '10:00' \
+      && printf '%s' "$DAILY_STATUS" | grep -q 'watch-rules.toml\|Rules'; then
+      pass "schedule --status shows configured arguments"
+    else
+      fail "schedule --status did not show --rules / --at"
+      printf '%s\n' "$DAILY_STATUS"
+    fi
+
+    if launchctl print "$SMOKE_DAILY_TARGET" >/dev/null 2>&1; then
+      pass "launchctl print ${SMOKE_DAILY_TARGET} shows the daily job loaded"
+    else
+      fail "launchctl print did not show ${SMOKE_DAILY_TARGET}"
+    fi
+
+    WATCH_SMOKE_TARGET="gui/${UID_NUM}/${SMOKE_LABEL}"
+    if launchctl print "$WATCH_SMOKE_TARGET" >/dev/null 2>&1; then
+      fail "schedule --install loaded or left the watch smoke agent"
+    else
+      pass "schedule --install did not touch the watch smoke agent"
+    fi
+
+    "$BIN" schedule --uninstall >/dev/null 2>&1 || true
+    DAILY_INSTALLED=0
+    if launchctl print "$SMOKE_DAILY_TARGET" >/dev/null 2>&1; then
+      fail "schedule --uninstall left the smoke daily agent loaded"
+    else
+      pass "schedule --uninstall removed the smoke daily agent"
+    fi
+  fi
+else
+  skip "schedule --install with real launchctl (needs macOS)"
+  skip "schedule --status / uninstall against real launchd (needs macOS)"
 fi
 
 # --- summary -------------------------------------------------------------

@@ -220,7 +220,7 @@ fn duplicate_detail(file: &FileEntry, duplicates: &DuplicateIndex, keeper: Optio
         return "not an extra copy (zero-byte files are ignored)".to_string();
     }
     if duplicates.is_keeper(&file.path) {
-        return "not an extra copy (this file is the one that is kept)".to_string();
+        return "not an extra copy (this file has been in the folder longest)".to_string();
     }
     "not an extra copy".to_string()
 }
@@ -349,18 +349,13 @@ fn parse_rules(text: &str) -> Result<Vec<Rule>, String> {
     Ok(rules)
 }
 
-/// Extensions listed on any rule. A directory whose name matches one of
-/// these is a package document and is tidied as a single item.
-pub fn bundle_extensions(rules: &[Rule]) -> Vec<String> {
-    let mut out = Vec::new();
-    for rule in rules {
-        for ext in &rule.extensions {
-            if !out.contains(ext) {
-                out.push(ext.clone());
-            }
-        }
-    }
-    out
+/// Document-package extensions tidied as a single item.
+///
+/// Always the four package types (`.pages`, `.numbers`, `.key`, `.rtfd`),
+/// never the rest of a rule's extension list. A custom rule that lists
+/// `dmg` must not turn a folder named `Ubuntu.dmg` into a file.
+pub fn bundle_extensions(_rules: &[Rule]) -> Vec<String> {
+    crate::scan::package_extension_list()
 }
 
 fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
@@ -859,6 +854,23 @@ mod tests {
     }
 
     #[test]
+    fn bundle_extensions_are_only_the_four_document_packages() {
+        let parsed = Ruleset::parse(DEFAULT_RULES).unwrap();
+        let ext = bundle_extensions(&parsed);
+        assert_eq!(ext, vec!["pages", "numbers", "key", "rtfd"]);
+        let custom = rules(
+            r#"
+            [[rules]]
+            name = "Installers"
+            extensions = ["dmg", "pkg", "app"]
+            action = "trash"
+            "#,
+        );
+        assert_eq!(bundle_extensions(&custom), ext);
+        assert!(!bundle_extensions(&custom).iter().any(|e| e == "dmg"));
+    }
+
+    #[test]
     fn duplicate_true_matches_only_the_extra_copy() {
         let set = rules(
             r#"
@@ -893,7 +905,12 @@ mod tests {
         assert!(set[1].matches(&keeper, at, &index));
         assert!(!set[1].matches(&extra, at, &index));
         let kept = set[0].explain(&keeper, at, &index);
-        assert!(kept.conditions[0].detail.contains("kept"));
+        assert!(
+            kept.conditions[0].detail.contains("longest")
+                || kept.conditions[0].detail.contains("kept"),
+            "{}",
+            kept.conditions[0].detail
+        );
     }
 
     fn entry_at(folder: &std::path::Path, name: &str, bytes: &[u8], age: StdDuration) -> FileEntry {

@@ -4,9 +4,9 @@
 //! after its size has stayed the same for the settle duration (2 seconds
 //! unless the caller passes another value). Partial downloads, hidden files,
 //! directories that are not package documents, symlinks, and anything that
-//! is not a child of the folder are ignored. A package directory (`.pages`
-//! and other extensions listed on a rule) is watched as one item. Watch
-//! mode always applies the rules.
+//! is not a child of the folder are ignored. A package directory (`.pages`,
+//! `.numbers`, `.key`, `.rtfd`) is watched as one item. Watch mode always
+//! applies the rules.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

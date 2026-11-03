@@ -58,11 +58,33 @@ pub struct Explanation {
     pub file_name: String,
     pub path: PathBuf,
     pub folder: PathBuf,
+    /// `.pages` / `.numbers` / `.key` / `.rtfd` package directory.
+    pub is_bundle: bool,
+    /// Skipped because it is a directory (ordinary or named like a file).
+    pub is_directory: bool,
     pub rules: Vec<ExplainedRule>,
     pub outcome: Outcome,
 }
 
 impl Explanation {
+    fn kind_label(&self) -> &'static str {
+        if self.is_bundle {
+            "package"
+        } else if self.is_directory {
+            "folder"
+        } else {
+            "file"
+        }
+    }
+
+    fn display_name(&self) -> String {
+        if self.is_bundle || self.is_directory {
+            format!("{}/", self.file_name)
+        } else {
+            self.file_name.clone()
+        }
+    }
+
     /// Winning rule name. `None` when the file is skipped or matches nothing.
     pub fn winner(&self) -> Option<&str> {
         match &self.outcome {
@@ -121,60 +143,57 @@ pub fn explain_path_with(
     let bundles = rules.bundle_extensions();
     let inspected = scan::inspect_with(&folder, &child, None, now, &bundles, ages)?;
     match inspected {
-        Inspect::Skip(skip) => {
-            return Ok(skipped_explanation(
-                skip.name,
-                skip.path,
-                folder,
-                skip.reason,
-            ));
-        }
-        Inspect::Gone => {
-            return Err(Error::msg(format!("file not found: {}", path.display())));
-        }
-        Inspect::Outside => {
-            return Err(Error::msg(format!(
-                "{} is not a file in {}",
-                path.display(),
-                folder.display()
-            )));
-        }
-        Inspect::Candidate(_) => {}
-    }
-
-    let view = crate::plan::view_folder_with(&folder, None, now, &bundles, ages)?;
-    let plan = plan_entries(
-        env,
-        &folder,
-        view.entries.clone(),
-        view.skipped.clone(),
-        rules,
-        now,
-        &view.duplicates,
-    )?;
-    let entry = plan
-        .actions
-        .iter()
-        .find(|action| action.file.name == name)
-        .map(|action| action.file.clone())
-        .or_else(|| {
-            plan.unmatched
+        Inspect::Skip(skip) => Ok(skipped_explanation(
+            skip.name,
+            skip.path,
+            folder,
+            skip.reason,
+        )),
+        Inspect::Gone => Err(Error::msg(format!("file not found: {}", path.display()))),
+        Inspect::Outside => Err(Error::msg(format!(
+            "{} is not a file in {}",
+            path.display(),
+            folder.display()
+        ))),
+        Inspect::Candidate(file) => {
+            let is_bundle = file.is_bundle;
+            let view = crate::plan::view_folder_with(&folder, None, now, &bundles, ages)?;
+            let plan = plan_entries(
+                env,
+                &folder,
+                view.entries.clone(),
+                view.skipped.clone(),
+                rules,
+                now,
+                &view.duplicates,
+            )?;
+            let entry = plan
+                .actions
                 .iter()
-                .find(|file| file.name == name)
-                .cloned()
-        })
-        .ok_or_else(|| Error::msg(format!("could not evaluate {}", child.display())))?;
+                .find(|action| action.file.name == name)
+                .map(|action| action.file.clone())
+                .or_else(|| {
+                    plan.unmatched
+                        .iter()
+                        .find(|file| file.name == name)
+                        .cloned()
+                })
+                .ok_or_else(|| Error::msg(format!("could not evaluate {}", child.display())))?;
 
-    let explained = walk_rules(rules, &entry, now, &view.duplicates);
-    let winner = explained.iter().find(|rule| rule.mark == RuleMark::Wins);
-    let outcome = outcome_for(&plan, &name, winner.map(|rule| rule.name.as_str()));
-    Ok(Explanation {
-        file_name: name,
-        path: child,
-        folder,
-        rules: explained,
-        outcome,
-    })
+            let explained = walk_rules(rules, &entry, now, &view.duplicates);
+            let winner = explained.iter().find(|rule| rule.mark == RuleMark::Wins);
+            let outcome = outcome_for(&plan, &name, winner.map(|rule| rule.name.as_str()));
+            Ok(Explanation {
+                file_name: name,
+                path: child,
+                folder,
+                is_bundle,
+                is_directory: is_bundle,
+                rules: explained,
+                outcome,
+            })
+        }
+    }
 }
 
 fn walk_rules(
@@ -246,6 +265,8 @@ fn skipped_explanation(
         file_name: name,
         path,
         folder,
+        is_bundle: false,
+        is_directory: reason.is_directory(),
         rules: Vec::new(),
         outcome: Outcome::Skipped {
             reason: reason.as_str().to_string(),
@@ -259,8 +280,9 @@ fn skip_detail(reason: SkipReason) -> &'static str {
         SkipReason::Hidden => "hidden files are left in place",
         SkipReason::PartialDownload => "partial downloads are left in place",
         SkipReason::Directory => {
-            "directories are left in place (a package whose extension is on a rule is filed as one item)"
+            "directories are left in place (only .pages, .numbers, .key, and .rtfd packages are filed as one item)"
         }
+        SkipReason::FolderNotAFile => "left in place",
         SkipReason::Symlink => "symlinks are left in place",
         SkipReason::NotRegular => "only regular files are tidied",
         SkipReason::NewerThanFilter => "newer than --older-than, so it is left out of the plan",
@@ -276,7 +298,12 @@ fn parent_dir(path: &Path) -> &Path {
 
 pub fn render(explanation: &Explanation, env: &Env, color: bool) -> String {
     let mut out = String::new();
-    line(&mut out, &dye(&explanation.file_name, color, "1"));
+    let title = if explanation.is_bundle {
+        format!("{}  (package)", explanation.display_name())
+    } else {
+        explanation.display_name()
+    };
+    line(&mut out, &dye(&title, color, "1"));
     line(
         &mut out,
         &format!(
@@ -406,6 +433,8 @@ pub fn render_json(explanation: &Explanation) -> Result<String, Error> {
         "file": explanation.file_name,
         "path": explanation.path.display().to_string(),
         "folder": explanation.folder.display().to_string(),
+        "bundle": explanation.is_bundle,
+        "kind": explanation.kind_label(),
         "skipped": skipped,
         "rules": rules,
         "outcome": outcome,

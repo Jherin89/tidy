@@ -1,9 +1,11 @@
-//! macOS launchd helper for `tidy watch`.
+//! macOS launchd helper for `tidy watch` and `tidy schedule`.
 //!
 //! `--uninstall` deletes one file: the LaunchAgent plist this module wrote
-//! (`~/Library/LaunchAgents/com.github.jherin89.tidy.plist`). That is tidy's
-//! own config, not a user download. Nothing else in tidy removes a file
-//! except the cross-device move in `relocate`.
+//! (`~/Library/LaunchAgents/com.github.jherin89.tidy.plist` or
+//! `…/com.github.jherin89.tidy.daily.plist`). That is tidy's own config, not
+//! a user download. Nothing else in tidy removes a file except the
+//! cross-device move in `relocate`. The two agents use distinct labels,
+//! plists, and log files, so uninstalling one leaves the other alone.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -13,6 +15,7 @@ use std::process::Command;
 use crate::error::Error;
 
 pub const LABEL: &str = "com.github.jherin89.tidy";
+pub const DAILY_LABEL: &str = "com.github.jherin89.tidy.daily";
 
 /// Launchd label. `TIDY_LAUNCHD_LABEL` overrides the default so a smoke
 /// test can install a throwaway agent without touching the real one.
@@ -20,6 +23,16 @@ pub fn job_label() -> Result<String, Error> {
     match std::env::var("TIDY_LAUNCHD_LABEL") {
         Ok(value) if !value.is_empty() => validate_label(&value),
         _ => Ok(LABEL.to_string()),
+    }
+}
+
+/// Daily-job label. `TIDY_LAUNCHD_DAILY_LABEL` overrides the default so a
+/// smoke test can install a throwaway agent without touching the real one
+/// or the watch agent.
+pub fn daily_job_label() -> Result<String, Error> {
+    match std::env::var("TIDY_LAUNCHD_DAILY_LABEL") {
+        Ok(value) if !value.is_empty() => validate_label(&value),
+        _ => Ok(DAILY_LABEL.to_string()),
     }
 }
 
@@ -50,12 +63,28 @@ pub struct LaunchPaths {
     pub label: String,
 }
 
-/// Arguments stored in the agent's ProgramArguments.
+/// Arguments stored in the watch agent's ProgramArguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchProgram {
     pub folder: PathBuf,
     pub rules: Option<PathBuf>,
     pub older_than: Option<String>,
+}
+
+/// Arguments stored in the daily job's ProgramArguments, plus the clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DailyProgram {
+    pub folder: PathBuf,
+    pub rules: Option<PathBuf>,
+    pub older_than: Option<String>,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl DailyProgram {
+    pub fn at_display(&self) -> String {
+        crate::parse::format_clock(self.hour, self.minute)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +107,8 @@ pub struct LaunchStatus {
     pub job: JobInfo,
     pub log_path: PathBuf,
     pub log_tail: Vec<String>,
+    /// `HH:MM` from StartCalendarInterval, when this is a daily job.
+    pub at: Option<String>,
 }
 
 pub fn plist_path(home: &Path) -> PathBuf {
@@ -92,6 +123,22 @@ pub fn plist_path_for(home: &Path, label: &str) -> PathBuf {
 
 pub fn log_path(home: &Path) -> PathBuf {
     home.join("Library").join("Logs").join("tidy.log")
+}
+
+pub fn daily_log_path(home: &Path) -> PathBuf {
+    home.join("Library").join("Logs").join("tidy-daily.log")
+}
+
+/// Log file for this label. The daily job uses `tidy-daily.log`; watch uses
+/// `tidy.log`. A `TIDY_LAUNCHD_DAILY_LABEL` override still maps to the daily
+/// log so a smoke agent does not share the watch log.
+pub fn log_path_for_label(home: &Path, label: &str) -> PathBuf {
+    let daily_override = std::env::var("TIDY_LAUNCHD_DAILY_LABEL").ok();
+    if label == DAILY_LABEL || daily_override.as_deref() == Some(label) {
+        daily_log_path(home)
+    } else {
+        log_path(home)
+    }
 }
 
 /// On macOS, or when `TIDY_LAUNCHCTL` is set so tests can inject a fake.
@@ -174,26 +221,29 @@ pub fn stable_brew_binary(exe: &Path) -> PathBuf {
     exe.to_path_buf()
 }
 
-pub fn render_plist(
+fn render_program_arguments(
     binary: &Path,
-    program: &WatchProgram,
-    log: &Path,
-    label: &str,
-    env_vars: &[(String, String)],
+    head: &str,
+    folder: &Path,
+    rules: Option<&Path>,
+    older_than: Option<&str>,
 ) -> String {
     let mut args = String::new();
     args.push_str(&xml_string(&binary.display().to_string()));
-    args.push_str(&xml_string("watch"));
-    args.push_str(&xml_string(&program.folder.display().to_string()));
-    if let Some(rules) = &program.rules {
+    args.push_str(&xml_string(head));
+    args.push_str(&xml_string(&folder.display().to_string()));
+    if let Some(rules) = rules {
         args.push_str(&xml_string("--rules"));
         args.push_str(&xml_string(&rules.display().to_string()));
     }
-    if let Some(older) = &program.older_than {
+    if let Some(older) = older_than {
         args.push_str(&xml_string("--older-than"));
         args.push_str(&xml_string(older));
     }
+    args
+}
 
+fn render_env_block(env_vars: &[(String, String)]) -> String {
     let mut env_block = String::new();
     if !env_vars.is_empty() {
         env_block.push_str("  <key>EnvironmentVariables</key>\n  <dict>\n");
@@ -206,6 +256,24 @@ pub fn render_plist(
         }
         env_block.push_str("  </dict>\n");
     }
+    env_block
+}
+
+pub fn render_plist(
+    binary: &Path,
+    program: &WatchProgram,
+    log: &Path,
+    label: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    let args = render_program_arguments(
+        binary,
+        "watch",
+        &program.folder,
+        program.rules.as_deref(),
+        program.older_than.as_deref(),
+    );
+    let env_block = render_env_block(env_vars);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -232,6 +300,59 @@ pub fn render_plist(
 "#,
         label = xml_escape(label),
         args = args,
+        log = xml_escape(&log.display().to_string()),
+        env = env_block,
+    )
+}
+
+pub fn render_daily_plist(
+    binary: &Path,
+    program: &DailyProgram,
+    log: &Path,
+    label: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    let args = render_program_arguments(
+        binary,
+        "--apply",
+        &program.folder,
+        program.rules.as_deref(),
+        program.older_than.as_deref(),
+    );
+    let env_block = render_env_block(env_vars);
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{args}  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>{hour}</integer>
+    <key>Minute</key>
+    <integer>{minute}</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{log}</string>
+  <key>StandardErrorPath</key>
+  <string>{log}</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+{env} </dict>
+</plist>
+"#,
+        label = xml_escape(label),
+        args = args,
+        hour = program.hour,
+        minute = program.minute,
         log = xml_escape(&log.display().to_string()),
         env = env_block,
     )
@@ -292,15 +413,53 @@ pub fn install(
     let plist = plist_path_for(&paths.home, &paths.label);
     let log = log_path(&paths.home);
     let xml = render_plist(&paths.binary, program, &log, &paths.label, env_vars);
+    let target = write_and_load(paths, &plist, &xml, force)?;
+    Ok(format!(
+        "Using binary {}\nWrote {}\nLoaded {target}\nWatching {}\nLog {}\n",
+        paths.binary.display(),
+        plist.display(),
+        program.folder.display(),
+        log.display()
+    ))
+}
+
+/// Write the daily-job plist and load it. Distinct label, plist, and log
+/// from the watch agent.
+pub fn install_daily(
+    paths: &LaunchPaths,
+    program: &DailyProgram,
+    env_vars: &[(String, String)],
+    force: bool,
+) -> Result<String, Error> {
+    let plist = plist_path_for(&paths.home, &paths.label);
+    let log = log_path_for_label(&paths.home, &paths.label);
+    let xml = render_daily_plist(&paths.binary, program, &log, &paths.label, env_vars);
+    let target = write_and_load(paths, &plist, &xml, force)?;
+    Ok(format!(
+        "Using binary {}\nWrote {}\nLoaded {target}\nDaily tidy --apply of {} at {}\nLog {}\n",
+        paths.binary.display(),
+        plist.display(),
+        program.folder.display(),
+        program.at_display(),
+        log.display()
+    ))
+}
+
+fn write_and_load(
+    paths: &LaunchPaths,
+    plist: &Path,
+    xml: &str,
+    force: bool,
+) -> Result<String, Error> {
     if let Some(parent) = plist.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| Error::io(format!("creating {}", parent.display()), err))?;
     }
     if plist.is_file() {
-        let existing = fs::read_to_string(&plist)
+        let existing = fs::read_to_string(plist)
             .map_err(|err| Error::io(format!("reading {}", plist.display()), err))?;
         if existing != xml && !force {
-            return Err(Error::msg(diff_hint(&plist, &existing, &xml)));
+            return Err(Error::msg(diff_hint(plist, &existing, xml)));
         }
     } else if plist.exists() {
         return Err(Error::msg(format!(
@@ -308,8 +467,7 @@ pub fn install(
             plist.display()
         )));
     }
-    fs::write(&plist, &xml)
-        .map_err(|err| Error::io(format!("writing {}", plist.display()), err))?;
+    fs::write(plist, xml).map_err(|err| Error::io(format!("writing {}", plist.display()), err))?;
 
     let domain = format!("gui/{}", paths.uid);
     let target = format!("{domain}/{}", paths.label);
@@ -328,13 +486,7 @@ pub fn install(
             stdout.trim()
         )));
     }
-    Ok(format!(
-        "Using binary {}\nWrote {}\nLoaded {target}\nWatching {}\nLog {}\n",
-        paths.binary.display(),
-        plist.display(),
-        program.folder.display(),
-        log.display()
-    ))
+    Ok(target)
 }
 
 /// Boot the job out, then delete the plist tidy installed.
@@ -361,13 +513,13 @@ pub fn uninstall(paths: &LaunchPaths) -> Result<String, Error> {
 
 pub fn status(paths: &LaunchPaths) -> Result<LaunchStatus, Error> {
     let plist = plist_path_for(&paths.home, &paths.label);
-    let log = log_path(&paths.home);
-    let parsed = if plist.is_file() {
+    let log = log_path_for_label(&paths.home, &paths.label);
+    let (parsed, at) = if plist.is_file() {
         let text = fs::read_to_string(&plist)
             .map_err(|err| Error::io(format!("reading {}", plist.display()), err))?;
-        parse_watch_program(&text)
+        (parse_watch_program(&text), parse_calendar_at(&text))
     } else {
-        ParsedWatchProgram::default()
+        (ParsedWatchProgram::default(), None)
     };
     let target = format!("gui/{}/{}", paths.uid, paths.label);
     let output = run_launchctl(paths, &["print".to_string(), target])?;
@@ -386,6 +538,7 @@ pub fn status(paths: &LaunchPaths) -> Result<LaunchStatus, Error> {
         job,
         log_path: log.clone(),
         log_tail: log_tail(&log, 8)?,
+        at,
     })
 }
 
@@ -425,6 +578,9 @@ pub fn render_status(status: &LaunchStatus, color: bool) -> String {
             status.older_than.as_deref().unwrap_or("(none)")
         ),
     );
+    if let Some(at) = &status.at {
+        line(&mut out, &format!("When    {at}"));
+    }
     if !status.arguments.is_empty() {
         line(&mut out, &format!("Args    {}", status.arguments.join(" ")));
     }
@@ -466,6 +622,7 @@ pub fn render_status_json(status: &LaunchStatus) -> Result<String, Error> {
         "folder": status.folder,
         "rules": status.rules,
         "older_than": status.older_than,
+        "at": status.at,
         "arguments": status.arguments,
         "loaded": status.job.loaded,
         "state": status.job.state,
@@ -574,6 +731,25 @@ pub fn parse_watch_program(xml: &str) -> ParsedWatchProgram {
         i += 1;
     }
     parsed
+}
+
+/// `HH:MM` from StartCalendarInterval Hour/Minute, if present.
+pub fn parse_calendar_at(xml: &str) -> Option<String> {
+    let hour = plist_integer_after_key(xml, "Hour")?;
+    let minute = plist_integer_after_key(xml, "Minute")?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some(crate::parse::format_clock(hour, minute))
+}
+
+fn plist_integer_after_key(xml: &str, key: &str) -> Option<u8> {
+    let marker = format!("<key>{key}</key>");
+    let rest = xml.split(&marker).nth(1)?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix("<integer>")?;
+    let end = rest.find("</integer>")?;
+    rest[..end].trim().parse().ok()
 }
 
 fn plist_array_after_key(xml: &str, key: &str) -> Vec<String> {
@@ -951,5 +1127,97 @@ gui/501/com.github.jherin89.tidy = {
             recorded.contains("print gui/501/com.github.jherin89.tidy"),
             "{recorded}"
         );
+    }
+
+    #[test]
+    fn daily_plist_uses_calendar_interval_and_apply() {
+        let binary = Path::new("/opt/homebrew/bin/tidy");
+        let folder = Path::new("/Users/a&b/Downloads <fun>");
+        let log = Path::new("/Users/a&b/Library/Logs/tidy-daily.log");
+        let program = DailyProgram {
+            folder: folder.to_path_buf(),
+            rules: Some(PathBuf::from("/tmp/rules & <mine>.toml")),
+            older_than: Some("30d".into()),
+            hour: 10,
+            minute: 0,
+        };
+        let xml = render_daily_plist(binary, &program, log, DAILY_LABEL, &[]);
+        assert!(xml.contains("<string>com.github.jherin89.tidy.daily</string>"));
+        assert!(xml.contains("<string>--apply</string>"));
+        assert!(xml.contains("<string>--rules</string>"));
+        assert!(xml.contains("<string>--older-than</string>"));
+        assert!(xml.contains("<string>30d</string>"));
+        assert!(xml.contains("<key>StartCalendarInterval</key>"));
+        assert!(xml.contains("<key>Hour</key>"));
+        assert!(xml.contains("<integer>10</integer>"));
+        assert!(xml.contains("<key>Minute</key>"));
+        assert!(xml.contains("<integer>0</integer>"));
+        assert!(xml.contains("<key>RunAtLoad</key>"));
+        assert!(xml.contains("<false/>"));
+        assert!(!xml.contains("<key>KeepAlive</key>"));
+        assert!(!xml.contains("<string>watch</string>"));
+        assert!(xml.contains("tidy-daily.log"));
+        assert_eq!(parse_calendar_at(&xml).as_deref(), Some("10:00"));
+        let parsed = parse_watch_program(&xml);
+        assert_eq!(parsed.folder.as_deref(), Some("/Users/a&b/Downloads <fun>"));
+        assert_eq!(parsed.rules.as_deref(), Some("/tmp/rules & <mine>.toml"));
+        assert_eq!(parsed.older_than.as_deref(), Some("30d"));
+        assert!(parsed.arguments.iter().any(|a| a == "--apply"));
+    }
+
+    #[test]
+    fn daily_install_uninstall_leaves_the_watch_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let (script, log) = fake_launchctl(
+            tmp.path(),
+            "if [ \"$1\" = bootout ]; then exit 3; fi\nexit 0\n",
+        );
+        let watch_paths = paths(&home, script.clone());
+        let folder = PathBuf::from("/tmp/Downloads");
+        install(&watch_paths, &watch_at(&folder), &[], false).unwrap();
+        let watch_plist = plist_path(&home);
+        let watch_xml = fs::read_to_string(&watch_plist).unwrap();
+
+        let daily_paths = LaunchPaths {
+            home: home.clone(),
+            uid: 501,
+            launchctl: script,
+            binary: PathBuf::from("/opt/homebrew/bin/tidy"),
+            label: DAILY_LABEL.to_string(),
+        };
+        let daily = DailyProgram {
+            folder: folder.clone(),
+            rules: Some(PathBuf::from("/tmp/custom.toml")),
+            older_than: Some("7d".into()),
+            hour: 9,
+            minute: 30,
+        };
+        let summary = install_daily(&daily_paths, &daily, &[], false).unwrap();
+        assert!(summary.contains("09:30"), "{summary}");
+        assert!(
+            summary.contains("--apply") || summary.contains("Daily tidy"),
+            "{summary}"
+        );
+        let daily_plist = plist_path_for(&home, DAILY_LABEL);
+        let daily_xml = fs::read_to_string(&daily_plist).unwrap();
+        assert!(daily_xml.contains("<string>--apply</string>"));
+        assert!(daily_xml.contains("<integer>9</integer>"));
+        assert!(daily_xml.contains("<integer>30</integer>"));
+        assert!(daily_xml.contains("tidy-daily.log"));
+        assert_eq!(fs::read_to_string(&watch_plist).unwrap(), watch_xml);
+
+        uninstall(&daily_paths).unwrap();
+        assert!(!daily_plist.exists());
+        assert!(watch_plist.is_file());
+        assert_eq!(fs::read_to_string(&watch_plist).unwrap(), watch_xml);
+
+        let recorded = fs::read_to_string(&log).unwrap();
+        assert!(
+            recorded.contains("bootout gui/501/com.github.jherin89.tidy.daily"),
+            "{recorded}"
+        );
+        assert!(recorded.contains("com.github.jherin89.tidy"), "{recorded}");
     }
 }

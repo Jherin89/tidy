@@ -136,6 +136,33 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
             }
             Ok(0)
         }
+        Some(Command::Schedule {
+            path,
+            rules,
+            older_than,
+            at,
+            install,
+            uninstall,
+            status,
+            print,
+            force,
+            json,
+        }) => schedule_service(
+            &env,
+            ScheduleRequest {
+                path,
+                rules: rules.or(cli.rules.clone()),
+                older_than: older_than.or(cli.older_than.clone()),
+                at,
+                install,
+                uninstall,
+                status,
+                print,
+                force,
+                json: json || cli.json,
+                apply: cli.apply,
+            },
+        ),
         None => {
             let folder = resolve_folder(&folder_or_default(cli.path.clone(), &env))?;
             let older = parse_older(cli.older_than.as_deref())?;
@@ -297,6 +324,157 @@ fn watch_service(env: &Env, request: WatchRequest) -> Result<u8, Error> {
         );
     }
     Ok(0)
+}
+
+struct ScheduleRequest {
+    path: Option<PathBuf>,
+    rules: Option<PathBuf>,
+    older_than: Option<String>,
+    at: Option<String>,
+    install: bool,
+    uninstall: bool,
+    status: bool,
+    print: bool,
+    force: bool,
+    json: bool,
+    apply: bool,
+}
+
+fn schedule_service(env: &Env, request: ScheduleRequest) -> Result<u8, Error> {
+    let ScheduleRequest {
+        path,
+        rules,
+        older_than,
+        at,
+        install,
+        uninstall,
+        status,
+        print,
+        force,
+        json,
+        apply,
+    } = request;
+    if print && (uninstall || status) {
+        return Err(Error::msg(
+            "`--print` is only valid alone or with `tidy schedule --install --print`",
+        ));
+    }
+    let modes = [install, uninstall, status]
+        .iter()
+        .filter(|flag| **flag)
+        .count();
+    if modes > 1 {
+        return Err(Error::msg(
+            "pass only one of --install, --uninstall, or --status",
+        ));
+    }
+    if force && !install {
+        return Err(Error::msg(
+            "`--force` is only valid with `tidy schedule --install`",
+        ));
+    }
+    if !install && !uninstall && !status && !print {
+        return Err(Error::msg(
+            "pass --install, --uninstall, --status, or --print (`tidy schedule --help`)",
+        ));
+    }
+    if apply {
+        return Err(Error::msg(
+            "`--apply` is already what the daily job runs; do not pass it to `tidy schedule`",
+        ));
+    }
+    if json && (install || uninstall || print) {
+        return Err(Error::msg(
+            "`--json` cannot be stored in the launchd agent (its output goes to the log file). Use `tidy schedule --status --json`.",
+        ));
+    }
+    if uninstall && (rules.is_some() || older_than.is_some() || path.is_some() || at.is_some()) {
+        return Err(Error::msg(
+            "`tidy schedule --uninstall` does not take --rules, --older-than, --at, or a folder; those flags belong on --install",
+        ));
+    }
+    if status && (rules.is_some() || older_than.is_some() || path.is_some() || at.is_some()) {
+        return Err(Error::msg(
+            "`tidy schedule --status` reads the installed plist; it does not take --rules, --older-than, --at, or a folder",
+        ));
+    }
+
+    let program = if install || print {
+        Some(install_daily_program(path, rules, older_than, at, env)?)
+    } else {
+        None
+    };
+
+    if print {
+        let binary = launchd::resolved_tidy_binary()?;
+        let program = program.expect("daily program");
+        let xml = launchd::render_daily_plist(
+            &binary,
+            &program,
+            &launchd::log_path_for_label(&env.home, &launchd::daily_job_label()?),
+            &launchd::daily_job_label()?,
+            &launchd::snapshot_override_env(),
+        );
+        eprintln!("Using binary {}", binary.display());
+        print!("{xml}");
+        return Ok(0);
+    }
+
+    launchd::ensure_supported()?;
+    let paths = LaunchPaths {
+        home: env.home.clone(),
+        uid: launchd::current_uid()?,
+        launchctl: launchd::launchctl_program(),
+        binary: launchd::resolved_tidy_binary()?,
+        label: launchd::daily_job_label()?,
+    };
+    if install {
+        let program = program.expect("daily program");
+        print!(
+            "{}",
+            launchd::install_daily(&paths, &program, &launchd::snapshot_override_env(), force,)?
+        );
+        return Ok(0);
+    }
+    if uninstall {
+        print!("{}", launchd::uninstall(&paths)?);
+        return Ok(0);
+    }
+    let report = launchd::status(&paths)?;
+    if json {
+        println!("{}", launchd::render_status_json(&report)?);
+    } else {
+        print!(
+            "{}",
+            launchd::render_status(&report, color_enabled() && !json)
+        );
+    }
+    Ok(0)
+}
+
+fn install_daily_program(
+    path: Option<PathBuf>,
+    rules: Option<PathBuf>,
+    older_than: Option<String>,
+    at: Option<String>,
+    env: &Env,
+) -> Result<launchd::DailyProgram, Error> {
+    if let Some(text) = older_than.as_deref() {
+        parse_duration(text).map_err(|err| Error::msg(format!("--older-than: {err}")))?;
+    }
+    let (hour, minute) = crate::parse::parse_clock(at.as_deref().unwrap_or("10:00"))
+        .map_err(|err| Error::msg(format!("--at: {err}")))?;
+    let rules = match rules {
+        Some(path) => Some(launchd::absolute_rules_path(&path)?),
+        None => None,
+    };
+    Ok(launchd::DailyProgram {
+        folder: service_folder(path, env)?,
+        rules,
+        older_than,
+        hour,
+        minute,
+    })
 }
 
 fn install_program(

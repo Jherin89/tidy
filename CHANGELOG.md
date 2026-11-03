@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-02
+
+### Added
+
+- `tidy schedule --install` / `--uninstall` / `--status` / `--print` for an optional daily `tidy --apply` launchd job (off by default). Distinct label (`com.github.jherin89.tidy.daily`), plist, and log from the watch agent, so the two coexist. `--at HH:MM` sets `StartCalendarInterval` (default 10:00 local). `--rules` and `--older-than` are stored in `ProgramArguments` the same way as `watch --install`. Each run writes a normal undo log. `tidy schedule --print` prints the plist without installing.
+- Preview and `tidy explain` mark packages and folders: package names get a trailing `/` and a `(package)` label; skipped directories named like files (for example `Ubuntu.dmg/`) show `folder, not a file`. JSON includes `bundle` / `kind` where those flags exist.
+
+### Fixed
+
+- A directory named like a file (`Ubuntu.dmg`, `Vacation.png`) is no longer treated as one item and trashed or moved. Only `.pages`, `.numbers`, `.key`, and `.rtfd` packages are single items. Custom rules cannot promote other folders.
+- Duplicate keeper is the copy that has been in the folder longest (Date Added on macOS, otherwise the later of created and modified), not the oldest mtime. A just-copied twin that preserved an old mtime is the extra copy.
+
+### Changed
+
+- Package detection no longer uses every extension listed on a rule. The four document-package types are always packages (case-insensitive); everything else that is a directory is skipped.
+- Built-in rules comments, README, and `tidy explain` wording for duplicates and packages match the new keep-copy and folder rules.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

@@ -7,8 +7,9 @@ use std::path::Path;
 fn user_file_removal_lives_only_in_the_relocate_fallback() {
     // `relocate.rs` removes a user file only after a verified cross-device copy.
     // `launchd.rs` is the one exception: `--uninstall` deletes the LaunchAgent
-    // plist tidy wrote (`com.github.jherin89.tidy.plist`). That is tidy's own
-    // config file, not a download.
+    // plist tidy wrote (`com.github.jherin89.tidy.plist` or
+    // `com.github.jherin89.tidy.daily.plist`). That is tidy's own config file,
+    // not a download.
     let hits = scan(|text| text.contains("remove_file") || text.contains("remove_dir_all"));
     assert_eq!(
         hits,
@@ -24,6 +25,10 @@ fn user_file_removal_lives_only_in_the_relocate_fallback() {
     assert!(
         launchd.contains("com.github.jherin89.tidy.plist"),
         "the launchd removal must stay limited to tidy's own plist"
+    );
+    assert!(
+        launchd.contains("com.github.jherin89.tidy.daily.plist"),
+        "the daily-job uninstall must target the daily plist, not the watch agent"
     );
     assert!(
         launchd.contains("fs::remove_file(&plist)"),

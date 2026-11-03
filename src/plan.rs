@@ -87,8 +87,9 @@ impl Plan {
 /// Eligible files, the skip list, and the duplicate index for one folder.
 ///
 /// The index is built from every eligible file, then `--older-than` removes
-/// young files from the plan. A young keeper still makes an old extra copy
-/// match `duplicate = true`.
+/// young files from the plan. A recently-added keeper still makes an old
+/// extra copy match `duplicate = true`. Keeper age is the same stamp as the
+/// 30-day rules (Date Added on macOS, otherwise later of created/modified).
 pub struct FolderView {
     pub entries: Vec<FileEntry>,
     pub skipped: Vec<Skipped>,

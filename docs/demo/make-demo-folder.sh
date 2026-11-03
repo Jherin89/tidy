@@ -34,11 +34,14 @@ mk "The-Pragmatic-Programmer.epub"            2900 "120 days ago"
 mk "random-notes.key"                          730 "13 days ago"
 mk "unknown-file.bin"                           12 "1 day ago"
 mk "Figma-agent-installer.zip"                 220 "1 day ago"
-# iWork package: a directory whose extension is on a rule. tidy moves it
-# as one item and never looks inside.
+# iWork package: only .pages/.numbers/.key/.rtfd are one item. tidy moves
+# the package as a whole and never looks inside.
 mkdir -p "$D/Q4-plan.pages/Contents"
 printf '<document/>\n' > "$D/Q4-plan.pages/index.xml"
 printf 'slides\n' > "$D/Q4-plan.pages/Contents/Data"
+# Folder named like a file: skipped, not matched as an old installer.
+mkdir -p "$D/Ubuntu.dmg/payload"
+printf 'not-a-disk-image\n' > "$D/Ubuntu.dmg/payload/disk"
 # things tidy always skips
 mk "ubuntu-24.04.iso.crdownload"            900000 "1 minute ago"
 mk ".DS_Store"                                   6 "1 day ago"

@@ -6,9 +6,13 @@ use std::time::{Duration, SystemTime};
 
 use crate::age::{resolve_age, AgeKind, AgeProbe, SystemAge};
 use crate::error::Error;
-use crate::names::{extension_matches, is_hidden_name, is_partial_name};
+use crate::names::{extension_matches, is_hidden_name, is_partial_name, last_extension};
 use crate::privacy;
 use crate::rules::is_older_than;
+
+/// Document-package extensions treated as one item. Case-insensitive.
+/// Custom rules cannot add to this list: a folder named `Ubuntu.dmg` stays a folder.
+pub const PACKAGE_EXTENSIONS: &[&str] = &["pages", "numbers", "key", "rtfd"];
 
 /// A regular file, or a package directory treated as one item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +24,7 @@ pub struct FileEntry {
     /// Timestamp `older_than` uses. See [`AgeKind`].
     pub age: SystemTime,
     pub age_kind: AgeKind,
-    /// Directory whose extension is listed on a rule. Moved/trashed whole.
+    /// `.pages` / `.numbers` / `.key` / `.rtfd` directory, moved/trashed whole.
     pub is_bundle: bool,
 }
 
@@ -37,6 +41,15 @@ impl FileEntry {
             is_bundle: false,
         }
     }
+
+    /// Name as shown in tables: packages get a trailing `/`.
+    pub fn display_name(&self) -> String {
+        if self.is_bundle {
+            format!("{}/", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +57,8 @@ pub enum SkipReason {
     Hidden,
     PartialDownload,
     Directory,
+    /// A directory whose name looks like a file (`Ubuntu.dmg`, `Vacation.png`).
+    FolderNotAFile,
     Symlink,
     NotRegular,
     NewerThanFilter,
@@ -55,10 +70,15 @@ impl SkipReason {
             SkipReason::Hidden => "hidden",
             SkipReason::PartialDownload => "partial download",
             SkipReason::Directory => "directory",
+            SkipReason::FolderNotAFile => "folder, not a file",
             SkipReason::Symlink => "symlink",
             SkipReason::NotRegular => "not a regular file",
             SkipReason::NewerThanFilter => "newer than --older-than",
         }
+    }
+
+    pub fn is_directory(self) -> bool {
+        matches!(self, SkipReason::Directory | SkipReason::FolderNotAFile)
     }
 }
 
@@ -67,6 +87,17 @@ pub struct Skipped {
     pub path: PathBuf,
     pub name: String,
     pub reason: SkipReason,
+}
+
+impl Skipped {
+    /// Name as shown in skip lists: directories get a trailing `/`.
+    pub fn display_name(&self) -> String {
+        if self.reason.is_directory() {
+            format!("{}/", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -78,9 +109,9 @@ pub enum Inspect {
     Gone,
 }
 
-/// Classify one path. Only a regular file (or a package directory whose
-/// extension is listed on a rule) that is a direct child of `folder` can
-/// become a candidate. Symlinks are never followed.
+/// Classify one path. Only a regular file (or a document package:
+/// `.pages`, `.numbers`, `.key`, `.rtfd`) that is a direct child of
+/// `folder` can become a candidate. Symlinks are never followed.
 pub fn inspect(
     folder: &Path,
     path: &Path,
@@ -128,7 +159,12 @@ pub fn inspect_with(
 
     let is_bundle = meta.is_dir() && is_bundle_name(&name, bundle_exts);
     if meta.is_dir() && !is_bundle {
-        return Ok(Inspect::Skip(skipped(path, name, SkipReason::Directory)));
+        let reason = if last_extension(&name).is_some() {
+            SkipReason::FolderNotAFile
+        } else {
+            SkipReason::Directory
+        };
+        return Ok(Inspect::Skip(skipped(path, name, reason)));
     }
     if !is_bundle && !meta.is_file() {
         return Ok(Inspect::Skip(skipped(path, name, SkipReason::NotRegular)));
@@ -180,11 +216,29 @@ pub fn inspect_with(
     }))
 }
 
-/// True when `name`'s extension is listed on a rule, so a directory with
-/// that name is a package document (`.pages`, `.numbers`, `.key`, `.rtfd`,
-/// or whatever else a rule names — `.app` only if a rule lists it).
+/// The four document-package extensions, as owned strings.
+pub fn package_extension_list() -> Vec<String> {
+    PACKAGE_EXTENSIONS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// True when `name` is a `.pages` / `.numbers` / `.key` / `.rtfd` package.
+///
+/// Case-insensitive. Other directories are never bundles: a folder named
+/// `Ubuntu.dmg` is skipped even if a rule lists `dmg`. `bundle_exts` may
+/// further restrict the set (tests); it cannot add types.
 pub fn is_bundle_name(name: &str, bundle_exts: &[String]) -> bool {
-    !bundle_exts.is_empty() && extension_matches(name, bundle_exts)
+    if !is_package_name(name) {
+        return false;
+    }
+    bundle_exts.is_empty() || extension_matches(name, bundle_exts)
+}
+
+/// True when `name`'s last extension is one of [`PACKAGE_EXTENSIONS`].
+pub fn is_package_name(name: &str) -> bool {
+    last_extension(name).is_some_and(|ext| PACKAGE_EXTENSIONS.iter().any(|pkg| ext == *pkg))
 }
 
 /// Sum of regular-file lengths under `path`. Symlinks are not followed.
@@ -449,9 +503,49 @@ mod tests {
             .any(|s| s.name == "nested" && s.reason == SkipReason::Directory));
         assert!(skipped
             .iter()
-            .any(|s| s.name == "Some.app" && s.reason == SkipReason::Directory));
+            .any(|s| s.name == "Some.app" && s.reason == SkipReason::FolderNotAFile));
         assert!(folder.join("nested/inner.pdf").is_file());
         assert!(pages.join("Contents/Data").is_file());
+    }
+
+    #[test]
+    fn folder_named_like_a_file_is_skipped_and_pages_is_still_a_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("Downloads");
+        fs::create_dir_all(&folder).unwrap();
+        let dmg = folder.join("Ubuntu.dmg");
+        fs::create_dir_all(dmg.join("payload")).unwrap();
+        fs::write(dmg.join("payload/disk"), b"iso").unwrap();
+        filetime_backdate(
+            &dmg.join("payload/disk"),
+            SystemTime::now() - Duration::from_secs(40 * 86400),
+        );
+        fs::create_dir_all(folder.join("Vacation.png")).unwrap();
+        let pages = folder.join("Report.PAGES");
+        fs::create_dir_all(pages.join("Contents")).unwrap();
+        fs::write(pages.join("index.xml"), b"<pages/>").unwrap();
+
+        let now = SystemTime::now();
+        let (entries, skipped) =
+            scan_with(&folder, None, now, &package_extension_list(), &SystemAge).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Report.PAGES");
+        assert!(entries[0].is_bundle);
+        assert_eq!(entries[0].display_name(), "Report.PAGES/");
+        assert!(skipped
+            .iter()
+            .any(|s| { s.name == "Ubuntu.dmg" && s.reason == SkipReason::FolderNotAFile }));
+        assert!(skipped
+            .iter()
+            .any(|s| { s.name == "Vacation.png" && s.reason == SkipReason::FolderNotAFile }));
+        assert!(is_bundle_name("Notes.pages", &[]));
+        assert!(is_bundle_name("Budget.NUMBERS", &package_extension_list()));
+        assert!(!is_bundle_name(
+            "Ubuntu.dmg",
+            &["dmg".into(), "pages".into()]
+        ));
+        assert!(!is_bundle_name("Vacation.png", &["png".into()]));
+        assert!(dmg.is_dir());
     }
 
     fn filetime_backdate(path: &Path, when: SystemTime) {

@@ -4,11 +4,11 @@
 # folder (by default, your Downloads folder). Only top-level items are
 # considered. Hidden files, folders, symlinks, and partial downloads
 # (.crdownload, .part, .download, .tmp, .partial) are always skipped.
-# Exception: a directory whose extension is listed on a rule (.pages,
-# .numbers, .key, .rtfd, …) is a package document and is moved or trashed
-# as one item. Other folders are still skipped. `.app` is only a package
-# if a rule lists that extension. Package documents are not compared as
-# duplicates.
+# Exception: iWork / TextEdit packages (.pages, .numbers, .key, .rtfd)
+# are moved or trashed as one item. Other folders are always skipped,
+# even when the name looks like a file (Ubuntu.dmg, Vacation.png). A
+# custom rule that lists dmg or png does not promote those folders.
+# Package documents are not compared as duplicates.
 #
 # Rules run from top to bottom. The first rule whose conditions all match
 # wins. A file that matches nothing is left where it is.
@@ -34,12 +34,14 @@
 #   smaller_than   Size is at most this big. Same units as larger_than.
 #   duplicate      true matches an extra byte-for-byte copy of another
 #                  eligible file in this folder. false matches a file that is
-#                  not an extra copy. The keeper (oldest modified time, then
-#                  the shortest name, then alphabetical) is never an extra
-#                  copy, so it falls through to the rules below. Zero-byte
-#                  files and package documents (.pages and other bundles) are
-#                  ignored. The comparison sees the whole folder, including
-#                  files that --older-than left out of the plan.
+#                  not an extra copy. The keeper is the copy that has been in
+#                  the folder longest (Date Added on macOS, otherwise the
+#                  later of created and modified), then the shortest name,
+#                  then alphabetical. It is never an extra copy, so it falls
+#                  through to the rules below. Zero-byte files and package
+#                  documents (.pages, .numbers, .key, .rtfd) are ignored.
+#                  The comparison sees the whole folder, including files
+#                  that --older-than left out of the plan.
 #
 # Comparisons on size and age are inclusive.
 #

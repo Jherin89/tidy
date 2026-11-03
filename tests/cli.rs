@@ -325,6 +325,22 @@ fn subcommand_help_omits_flags_that_do_not_apply() {
     assert!(watch.contains("--rules"), "{watch}");
     assert!(watch.contains("--json"), "{watch}");
     assert!(!watch.contains("--apply"), "{watch}");
+
+    let schedule = String::from_utf8(
+        tidy(sandbox().path())
+            .args(["schedule", "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(schedule.contains("--older-than"), "{schedule}");
+    assert!(schedule.contains("--rules"), "{schedule}");
+    assert!(schedule.contains("--at"), "{schedule}");
+    assert!(schedule.contains("--install"), "{schedule}");
+    assert!(schedule.contains("--print"), "{schedule}");
 }
 
 #[test]
@@ -586,6 +602,24 @@ fn install_without_a_launchctl_override_explains_that_launchd_is_macos_only() {
         .exists());
 }
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn schedule_install_without_a_launchctl_override_explains_that_launchd_is_macos_only() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .env_remove("TIDY_LAUNCHCTL")
+        .args(["schedule", "--install"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "launchd is macOS-only; on Linux use a systemd user service — see README",
+        ));
+    assert!(!tmp
+        .path()
+        .join("home/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist")
+        .exists());
+}
+
 #[test]
 fn bundle_is_listed_moved_and_undone() {
     let tmp = sandbox();
@@ -784,6 +818,268 @@ fn explain_reports_the_age_source() {
         "{stdout}"
     );
     assert!(stdout.contains("needs ≥ 30d"), "{stdout}");
+}
+
+#[test]
+fn folder_named_like_a_file_is_skipped_in_preview_and_explain() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    let dmg = dir.join("Ubuntu.dmg");
+    fs::create_dir_all(dmg.join("payload")).unwrap();
+    write_aged(
+        &dmg.join("payload/disk"),
+        b"old-installer",
+        Duration::from_secs(40 * 86_400),
+    );
+    let pages = dir.join("Report.pages");
+    fs::create_dir_all(pages.join("Contents")).unwrap();
+    fs::write(pages.join("index.xml"), b"<doc/>").unwrap();
+    fs::write(pages.join("Contents/Data"), b"inside").unwrap();
+
+    let stdout = String::from_utf8(
+        tidy(tmp.path())
+            .arg(dir.as_os_str())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(stdout.contains("Ubuntu.dmg/"), "{stdout}");
+    assert!(stdout.contains("folder, not a file"), "{stdout}");
+    assert!(stdout.contains("Report.pages/"), "{stdout}");
+    assert!(dmg.is_dir());
+
+    let json = String::from_utf8(
+        tidy(tmp.path())
+            .args(["--json"])
+            .arg(&dir)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file"] == "Ubuntu.dmg" && item["reason"] == "folder, not a file"));
+    assert!(value["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file"] == "Report.pages" && item["bundle"] == true));
+
+    let explain = String::from_utf8(
+        tidy(tmp.path())
+            .args(["explain"])
+            .arg(&dmg)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(explain.contains("folder, not a file"), "{explain}");
+    assert!(explain.contains("left in place"), "{explain}");
+
+    let pages_explain = String::from_utf8(
+        tidy(tmp.path())
+            .args(["explain"])
+            .arg(&pages)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(pages_explain.contains("Report.pages/"), "{pages_explain}");
+    assert!(pages_explain.contains("(package)"), "{pages_explain}");
+}
+
+#[test]
+fn schedule_print_writes_apply_and_calendar_interval() {
+    let tmp = sandbox();
+    let root = tmp.path();
+    let folder = downloads(root);
+    let rules = root.join("custom.toml");
+    fs::write(
+        &rules,
+        r#"
+[[rules]]
+name = "PDFs"
+extensions = ["pdf"]
+action = "move"
+destination = "Filed"
+"#,
+    )
+    .unwrap();
+
+    let printed = tidy(root)
+        .args([
+            "schedule",
+            "--print",
+            "--older-than",
+            "30d",
+            "--at",
+            "09:15",
+            "--rules",
+        ])
+        .arg(&rules)
+        .arg(&folder)
+        .assert()
+        .success();
+    let xml = String::from_utf8(printed.get_output().stdout.clone()).unwrap();
+    assert!(xml.contains("<string>--apply</string>"), "{xml}");
+    assert!(xml.contains("<string>--rules</string>"), "{xml}");
+    assert!(xml.contains("<string>--older-than</string>"), "{xml}");
+    assert!(xml.contains("<string>30d</string>"), "{xml}");
+    assert!(xml.contains("<key>StartCalendarInterval</key>"), "{xml}");
+    assert!(xml.contains("<integer>9</integer>"), "{xml}");
+    assert!(xml.contains("<integer>15</integer>"), "{xml}");
+    assert!(xml.contains("com.github.jherin89.tidy.daily"), "{xml}");
+    assert!(xml.contains("<false/>"), "{xml}");
+    assert!(!xml.contains("<string>watch</string>"), "{xml}");
+    assert!(
+        !root
+            .join("home/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist")
+            .exists(),
+        "--print must not write a plist"
+    );
+
+    tidy(root)
+        .args(["schedule", "--print", "--at", "25:00"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--at"));
+
+    tidy(root)
+        .args(["schedule", "--print", "--at", "10:60"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--at"));
+}
+
+#[cfg(unix)]
+#[test]
+fn schedule_install_uninstall_leaves_the_watch_agent() {
+    let tmp = sandbox();
+    let root = tmp.path();
+    let log = root.join("launchctl.log");
+    let script = root.join("launchctl");
+    let body = "if [ \"$1\" = print ]; then\ncat <<'EOF'\nstate = loaded\npid = 11\nlast exit code = 0\nEOF\nfi\nif [ \"$1\" = bootout ]; then\nexit 3\nfi\nexit 0\n";
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}",
+            log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let folder = downloads(root);
+    let rules = root.join("daily.toml");
+    fs::write(
+        &rules,
+        "[[rules]]\nname = \"T\"\nextensions = [\"txt\"]\naction = \"trash\"\n",
+    )
+    .unwrap();
+
+    let tidy_at = |args: &[&str]| {
+        let mut cmd = tidy(root);
+        cmd.env("TIDY_LAUNCHCTL", &script)
+            .env("TIDY_UID", "501")
+            .args(args);
+        cmd
+    };
+
+    tidy_at(&["watch", "--install"])
+        .arg(&folder)
+        .assert()
+        .success();
+    let watch_plist = root.join("home/Library/LaunchAgents/com.github.jherin89.tidy.plist");
+    let watch_xml = fs::read_to_string(&watch_plist).unwrap();
+
+    tidy_at(&[
+        "schedule",
+        "--install",
+        "--at",
+        "10:00",
+        "--older-than",
+        "7d",
+        "--rules",
+    ])
+    .arg(&rules)
+    .arg(&folder)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Daily tidy --apply"))
+    .stdout(predicate::str::contains("10:00"));
+
+    let daily_plist = root.join("home/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist");
+    let daily_xml = fs::read_to_string(&daily_plist).unwrap();
+    assert!(
+        daily_xml.contains("<string>--apply</string>"),
+        "{daily_xml}"
+    );
+    assert!(daily_xml.contains("<string>7d</string>"), "{daily_xml}");
+    assert!(daily_xml.contains("<integer>10</integer>"), "{daily_xml}");
+    assert_eq!(fs::read_to_string(&watch_plist).unwrap(), watch_xml);
+
+    let status = String::from_utf8(
+        tidy_at(&["schedule", "--status"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(status.contains("10:00"), "{status}");
+    assert!(status.contains("7d"), "{status}");
+
+    tidy_at(&["schedule", "--uninstall"]).assert().success();
+    assert!(!daily_plist.exists());
+    assert!(watch_plist.is_file());
+    assert_eq!(fs::read_to_string(&watch_plist).unwrap(), watch_xml);
+}
+
+#[test]
+fn schedule_job_command_applies_and_undo_restores() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("stale.txt"),
+        b"notes",
+        Duration::from_secs(86_400),
+    );
+    let rules = tmp.path().join("trash-txt.toml");
+    fs::write(
+        &rules,
+        "[[rules]]\nname = \"Text\"\nextensions = [\"txt\"]\naction = \"trash\"\n",
+    )
+    .unwrap();
+
+    tidy(tmp.path())
+        .args(["--apply", "--rules"])
+        .arg(&rules)
+        .arg(&dir)
+        .assert()
+        .success();
+    assert!(!dir.join("stale.txt").exists());
+    assert!(trash_has(&tmp.path().join("trash"), b"notes"));
+
+    tidy(tmp.path()).arg("undo").assert().success();
+    assert_eq!(fs::read(dir.join("stale.txt")).unwrap(), b"notes");
+    assert!(!trash_has(&tmp.path().join("trash"), b"notes"));
 }
 
 fn trash_has(dir: &Path, bytes: &[u8]) -> bool {
