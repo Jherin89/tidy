@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-13
+
+### Added
+
+- Optional code signing and notarization of the universal macOS binary in the release workflow. The job runs only when the Apple Developer secrets are configured (`APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, plus either the Apple ID trio or the App Store Connect API key trio). If the signing secrets are absent, the step skips and the unsigned archive is published as before. An incomplete set fails the job and names the missing secret names. A bare Mach-O inside the `.tar.gz` is not stapled; Gatekeeper can check the notarization ticket online. See the README section "Notarizing the Mac binary".
+- The macOS CI job lints both launchd agents with `plutil`: `tidy watch --install --print` and `tidy schedule --print`, including `--rules` / `--older-than` (and `--at` for the daily job). The daily plist must contain `--apply`, `StartCalendarInterval`, and the daily label, and must not be a KeepAlive watch agent.
+
+### Fixed
+
+- `by_date = true` month folders (`YYYY-MM`) use the file's resolved age — Date Added when that stamp exists, otherwise the later of created and modified — the same timestamp as `older_than` and the duplicate keeper. They no longer use raw modified time, and they do not parse a date from the file name. A screenshot copied today lands in the current month even when its mtime or name is older. `tidy explain` notes that date source next to a `by_date` destination (and in JSON as `month_source`).
+
+### Changed
+
+- `tidy watch` and `tidy schedule` share one launchd plist builder and one installer. The two agents stay separate: different labels, plists, logs, and program arguments (`watch` with KeepAlive, versus `tidy --apply` on a calendar interval). `tidy watch --print` still requires `--install`. `tidy schedule --print` still works on its own.
+
+### Maintenance
+
+- CI and the macOS release build run on `macos-15` instead of `macos-14`.
+
 ## [0.4.0] - 2026-11-02
 
 ### Added

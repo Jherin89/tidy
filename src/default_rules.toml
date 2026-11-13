@@ -51,8 +51,11 @@
 #       "~" is your home directory. A relative destination is resolved inside
 #       the folder being tidied. Missing folders are created when you --apply.
 #   by_date = true
-#       Optional. Puts the file in a YYYY-MM subfolder of destination, using
-#       the file's modified time in the local timezone.
+#       Optional. Puts the file in a YYYY-MM subfolder of destination. The
+#       month is the file's age in the local timezone: Date Added on macOS
+#       when that stamp exists, otherwise the later of created and modified.
+#       That is the same stamp older_than uses. It is not the raw modified
+#       time, and it is not a date parsed from the file name.
 #   action = "trash"
 #       Sends the file to the system Trash. tidy never permanently deletes.
 #

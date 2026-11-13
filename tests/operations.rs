@@ -161,7 +161,7 @@ fn builtin_plan_apply_and_undo_round_trip() {
     assert!(plan.skipped.iter().any(|skip| skip.name == "link.pdf"));
 
     let shot = rule_for("Screenshot 1.png");
-    let bucket = tidy::plan::month_bucket(shot.file.modified);
+    let bucket = tidy::plan::month_bucket(shot.file.age);
     assert_eq!(
         shot.destination.as_ref().unwrap(),
         &env.home
@@ -864,6 +864,68 @@ fn explain_shows_age_source_in_older_than_detail() {
     );
     let text = tidy::explain::render(&explained, &env, false);
     assert!(text.contains("old ("), "{text}");
+}
+
+struct AddedAt(SystemTime);
+
+impl tidy::age::AgeProbe for AddedAt {
+    fn probe(&self, _path: &Path, meta: &std::fs::Metadata) -> tidy::age::FileTimes {
+        tidy::age::FileTimes {
+            modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            created: None,
+            added: Some(self.0),
+        }
+    }
+}
+
+#[test]
+fn explain_month_folder_follows_date_added_not_mtime() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let shot = folder.join("Screenshot 2026-10-01.png");
+    write_aged(&shot, b"png", Duration::from_secs(400 * 86400));
+    let rules_path = tmp.path().join("rules.toml");
+    fs::write(
+        &rules_path,
+        r#"
+[[rules]]
+name = "Screenshots"
+glob = ["Screenshot*"]
+extensions = ["png"]
+action = "move"
+destination = "~/Pictures/Screenshots"
+by_date = true
+"#,
+    )
+    .unwrap();
+    let rules = load_rules(&env, Some(&rules_path), false).unwrap();
+    let now = SystemTime::now();
+    let old_month = tidy::plan::month_bucket(now - Duration::from_secs(400 * 86400));
+    let recent = tidy::plan::month_bucket(now);
+    assert_ne!(old_month, recent);
+
+    let explained =
+        tidy::explain::explain_path_with(&env, &rules, &shot, now, &AddedAt(now)).unwrap();
+    let destination = explained.destination().unwrap();
+    assert!(
+        destination.contains(&format!("Screenshots/{recent}/")),
+        "{destination}"
+    );
+    assert!(
+        !destination.contains(&format!("Screenshots/{old_month}/")),
+        "{destination}"
+    );
+    let text = tidy::explain::render(&explained, &env, false);
+    assert!(text.contains("(date added)"), "{text}");
+    assert!(text.contains(&recent), "{text}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&tidy::explain::render_json(&explained).unwrap()).unwrap();
+    assert_eq!(json["outcome"]["month_source"], "date added");
+    let path = json["outcome"]["destination_path"].as_str().unwrap();
+    assert!(path.contains(&format!("/{recent}/")), "{path}");
+    assert!(!path.contains(&format!("/{old_month}/")), "{path}");
 }
 
 #[test]

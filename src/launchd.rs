@@ -259,21 +259,100 @@ fn render_env_block(env_vars: &[(String, String)]) -> String {
     env_block
 }
 
-pub fn render_plist(
+/// What differs between the watch agent and the daily job.
+///
+/// The two agents stay separate plists. This enum only carries the keys
+/// the shared builder has to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobKind {
+    /// `tidy watch`: RunAtLoad, KeepAlive, no calendar interval.
+    Watch,
+    /// `tidy --apply` once a day via StartCalendarInterval.
+    Daily { hour: u8, minute: u8 },
+}
+
+/// Folder, optional flags, and which agent they belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentProgram {
+    pub folder: PathBuf,
+    pub rules: Option<PathBuf>,
+    pub older_than: Option<String>,
+    pub kind: JobKind,
+}
+
+impl AgentProgram {
+    pub fn from_watch(program: &WatchProgram) -> Self {
+        Self {
+            folder: program.folder.clone(),
+            rules: program.rules.clone(),
+            older_than: program.older_than.clone(),
+            kind: JobKind::Watch,
+        }
+    }
+
+    pub fn from_daily(program: &DailyProgram) -> Self {
+        Self {
+            folder: program.folder.clone(),
+            rules: program.rules.clone(),
+            older_than: program.older_than.clone(),
+            kind: JobKind::Daily {
+                hour: program.hour,
+                minute: program.minute,
+            },
+        }
+    }
+
+    fn head(&self) -> &'static str {
+        match self.kind {
+            JobKind::Watch => "watch",
+            JobKind::Daily { .. } => "--apply",
+        }
+    }
+}
+
+fn mode_block(kind: &JobKind) -> String {
+    match *kind {
+        JobKind::Watch => "\
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+"
+        .to_string(),
+        JobKind::Daily { hour, minute } => format!(
+            "\
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>{hour}</integer>
+    <key>Minute</key>
+    <integer>{minute}</integer>
+  </dict>
+"
+        ),
+    }
+}
+
+/// One plist builder for both agents. Watch and daily stay different labels,
+/// logs, program heads, and schedule keys.
+pub fn render_agent_plist(
     binary: &Path,
-    program: &WatchProgram,
+    program: &AgentProgram,
     log: &Path,
     label: &str,
     env_vars: &[(String, String)],
 ) -> String {
     let args = render_program_arguments(
         binary,
-        "watch",
+        program.head(),
         &program.folder,
         program.rules.as_deref(),
         program.older_than.as_deref(),
     );
     let env_block = render_env_block(env_vars);
+    let mode = mode_block(&program.kind);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -285,11 +364,7 @@ pub fn render_plist(
   <key>ProgramArguments</key>
   <array>
 {args}  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
+{mode}  <key>StandardOutPath</key>
   <string>{log}</string>
   <key>StandardErrorPath</key>
   <string>{log}</string>
@@ -300,8 +375,25 @@ pub fn render_plist(
 "#,
         label = xml_escape(label),
         args = args,
+        mode = mode,
         log = xml_escape(&log.display().to_string()),
         env = env_block,
+    )
+}
+
+pub fn render_plist(
+    binary: &Path,
+    program: &WatchProgram,
+    log: &Path,
+    label: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    render_agent_plist(
+        binary,
+        &AgentProgram::from_watch(program),
+        log,
+        label,
+        env_vars,
     )
 }
 
@@ -312,49 +404,12 @@ pub fn render_daily_plist(
     label: &str,
     env_vars: &[(String, String)],
 ) -> String {
-    let args = render_program_arguments(
+    render_agent_plist(
         binary,
-        "--apply",
-        &program.folder,
-        program.rules.as_deref(),
-        program.older_than.as_deref(),
-    );
-    let env_block = render_env_block(env_vars);
-
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-{args}  </array>
-  <key>RunAtLoad</key>
-  <false/>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>{hour}</integer>
-    <key>Minute</key>
-    <integer>{minute}</integer>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>{log}</string>
-  <key>StandardErrorPath</key>
-  <string>{log}</string>
-  <key>ProcessType</key>
-  <string>Background</string>
-{env} </dict>
-</plist>
-"#,
-        label = xml_escape(label),
-        args = args,
-        hour = program.hour,
-        minute = program.minute,
-        log = xml_escape(&log.display().to_string()),
-        env = env_block,
+        &AgentProgram::from_daily(program),
+        log,
+        label,
+        env_vars,
     )
 }
 
@@ -402,25 +457,50 @@ pub fn absolute_rules_path(path: &Path) -> Result<PathBuf, Error> {
         .map_err(|err| Error::io(format!("resolving rules file {}", path.display()), err))
 }
 
-/// Write the plist and load it. Refuses to replace a different plist unless
-/// `force` is set. Returns the human-readable summary.
+fn log_for_agent(home: &Path, program: &AgentProgram, label: &str) -> PathBuf {
+    match program.kind {
+        JobKind::Watch => log_path(home),
+        JobKind::Daily { .. } => log_path_for_label(home, label),
+    }
+}
+
+/// Write one agent's plist and load it. Refuses to replace a different plist
+/// unless `force` is set. Watch and daily keep their own labels and logs.
+pub fn install_agent(
+    paths: &LaunchPaths,
+    program: &AgentProgram,
+    env_vars: &[(String, String)],
+    force: bool,
+) -> Result<String, Error> {
+    let plist = plist_path_for(&paths.home, &paths.label);
+    let log = log_for_agent(&paths.home, program, &paths.label);
+    let xml = render_agent_plist(&paths.binary, program, &log, &paths.label, env_vars);
+    let target = write_and_load(paths, &plist, &xml, force)?;
+    let detail = match program.kind {
+        JobKind::Watch => format!("Watching {}", program.folder.display()),
+        JobKind::Daily { hour, minute } => format!(
+            "Daily tidy --apply of {} at {}",
+            program.folder.display(),
+            crate::parse::format_clock(hour, minute)
+        ),
+    };
+    Ok(format!(
+        "Using binary {}\nWrote {}\nLoaded {target}\n{detail}\nLog {}\n",
+        paths.binary.display(),
+        plist.display(),
+        log.display()
+    ))
+}
+
+/// Write the watch plist and load it. Refuses to replace a different plist
+/// unless `force` is set. Returns the human-readable summary.
 pub fn install(
     paths: &LaunchPaths,
     program: &WatchProgram,
     env_vars: &[(String, String)],
     force: bool,
 ) -> Result<String, Error> {
-    let plist = plist_path_for(&paths.home, &paths.label);
-    let log = log_path(&paths.home);
-    let xml = render_plist(&paths.binary, program, &log, &paths.label, env_vars);
-    let target = write_and_load(paths, &plist, &xml, force)?;
-    Ok(format!(
-        "Using binary {}\nWrote {}\nLoaded {target}\nWatching {}\nLog {}\n",
-        paths.binary.display(),
-        plist.display(),
-        program.folder.display(),
-        log.display()
-    ))
+    install_agent(paths, &AgentProgram::from_watch(program), env_vars, force)
 }
 
 /// Write the daily-job plist and load it. Distinct label, plist, and log
@@ -431,18 +511,7 @@ pub fn install_daily(
     env_vars: &[(String, String)],
     force: bool,
 ) -> Result<String, Error> {
-    let plist = plist_path_for(&paths.home, &paths.label);
-    let log = log_path_for_label(&paths.home, &paths.label);
-    let xml = render_daily_plist(&paths.binary, program, &log, &paths.label, env_vars);
-    let target = write_and_load(paths, &plist, &xml, force)?;
-    Ok(format!(
-        "Using binary {}\nWrote {}\nLoaded {target}\nDaily tidy --apply of {} at {}\nLog {}\n",
-        paths.binary.display(),
-        plist.display(),
-        program.folder.display(),
-        program.at_display(),
-        log.display()
-    ))
+    install_agent(paths, &AgentProgram::from_daily(program), env_vars, force)
 }
 
 fn write_and_load(
@@ -1219,5 +1288,74 @@ gui/501/com.github.jherin89.tidy = {
             "{recorded}"
         );
         assert!(recorded.contains("com.github.jherin89.tidy"), "{recorded}");
+    }
+
+    #[test]
+    fn shared_builder_matches_watch_and_daily_xml() {
+        let binary = Path::new("/opt/homebrew/bin/tidy");
+        let folder = Path::new("/Users/a&b/Downloads <fun>");
+        let watch_log = Path::new("/Users/a&b/Library/Logs/tidy.log");
+        let daily_log = Path::new("/Users/a&b/Library/Logs/tidy-daily.log");
+        let env = [("TIDY_HOME".into(), "/Users/a&b".into())];
+        let watch = WatchProgram {
+            folder: folder.to_path_buf(),
+            rules: Some(PathBuf::from("/tmp/rules & <mine>.toml")),
+            older_than: Some("30d".into()),
+        };
+        let daily = DailyProgram {
+            folder: folder.to_path_buf(),
+            rules: Some(PathBuf::from("/tmp/rules & <mine>.toml")),
+            older_than: Some("30d".into()),
+            hour: 10,
+            minute: 0,
+        };
+
+        let watch_xml = render_agent_plist(
+            binary,
+            &AgentProgram::from_watch(&watch),
+            watch_log,
+            LABEL,
+            &env,
+        );
+        assert_eq!(
+            watch_xml,
+            render_plist(binary, &watch, watch_log, LABEL, &env)
+        );
+        assert!(watch_xml.contains("<string>watch</string>"));
+        assert!(watch_xml.contains("<key>KeepAlive</key>"));
+        assert!(watch_xml.contains("<true/>"));
+        assert!(!watch_xml.contains("<key>StartCalendarInterval</key>"));
+        assert!(!watch_xml.contains("<string>--apply</string>"));
+        assert!(watch_xml.contains("rules &amp; &lt;mine&gt;.toml"));
+        assert!(watch_xml.contains("Downloads &lt;fun&gt;"));
+        assert!(watch_xml.contains("tidy.log"));
+        assert!(!watch_xml.contains("tidy-daily.log"));
+        assert_eq!(
+            parse_watch_program(&watch_xml).rules.as_deref(),
+            Some("/tmp/rules & <mine>.toml")
+        );
+
+        let daily_xml = render_agent_plist(
+            binary,
+            &AgentProgram::from_daily(&daily),
+            daily_log,
+            DAILY_LABEL,
+            &[],
+        );
+        assert_eq!(
+            daily_xml,
+            render_daily_plist(binary, &daily, daily_log, DAILY_LABEL, &[])
+        );
+        assert!(daily_xml.contains("<string>--apply</string>"));
+        assert!(daily_xml.contains("<key>StartCalendarInterval</key>"));
+        assert!(daily_xml.contains("<integer>10</integer>"));
+        assert!(daily_xml.contains("<integer>0</integer>"));
+        assert!(daily_xml.contains("<false/>"));
+        assert!(!daily_xml.contains("<key>KeepAlive</key>"));
+        assert!(!daily_xml.contains("<string>watch</string>"));
+        assert!(daily_xml.contains("com.github.jherin89.tidy.daily"));
+        assert!(daily_xml.contains("tidy-daily.log"));
+        assert_ne!(watch_xml, daily_xml);
+        assert_eq!(parse_calendar_at(&daily_xml).as_deref(), Some("10:00"));
     }
 }

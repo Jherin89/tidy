@@ -17,7 +17,7 @@ permissions:
 jobs:
   macos-universal:
     name: universal-apple-darwin
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.1
@@ -44,6 +44,18 @@ jobs:
           ./dist/bin/tidy --version
           mkdir -p "$RUNNER_TEMP/dl"
           ./dist/bin/tidy "$RUNNER_TEMP/dl"
+      - name: Sign and notarize (when Apple secrets are configured)
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: bash .github/macos-sign-and-notarize.sh dist/bin/tidy
       - name: Package
         run: bash .github/package-archive.sh universal-apple-darwin dist/bin/tidy
       - uses: actions/upload-artifact@v7

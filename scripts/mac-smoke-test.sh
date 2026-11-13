@@ -346,6 +346,42 @@ else
   pass "schedule --print is not a watch agent"
 fi
 
+# --- 5c. month folder follows resolved age, not mtime --------------------
+MONTH_DIR="${WORK}/months"
+mkdir -p "$MONTH_DIR"
+SHOT="${MONTH_DIR}/Screenshot 2026-10-01.png"
+printf 'png' >"$SHOT"
+if date -d '400 days ago' '+%Y-%m' >/dev/null 2>&1; then
+  OLD_MONTH="$(date -d '400 days ago' '+%Y-%m')"
+  touch -d '400 days ago' "$SHOT"
+else
+  OLD_MONTH="$(date -v-400d '+%Y-%m')"
+  touch -t "$(date -v-400d '+%Y%m%d%H%M')" "$SHOT"
+fi
+CURRENT_MONTH="$(date '+%Y-%m')"
+MONTH_RULES="${WORK}/month-rules.toml"
+cat >"$MONTH_RULES" <<'EOF'
+[[rules]]
+name = "Screenshots"
+glob = ["Screenshot*"]
+extensions = ["png"]
+action = "move"
+destination = "~/Pictures/Screenshots"
+by_date = true
+EOF
+MONTH_DRY="$("$BIN" --rules "$MONTH_RULES" "$MONTH_DIR" 2>&1 || true)"
+if printf '%s' "$MONTH_DRY" | grep -q "Screenshots/${CURRENT_MONTH}/"; then
+  if [[ "$OLD_MONTH" != "$CURRENT_MONTH" ]] && printf '%s' "$MONTH_DRY" | grep -q "Screenshots/${OLD_MONTH}/"; then
+    fail "by_date used the old mtime month ${OLD_MONTH}"
+    printf '%s\n' "$MONTH_DRY"
+  else
+    pass "by_date month folder uses resolved age (${CURRENT_MONTH}), not mtime"
+  fi
+else
+  fail "by_date month folder did not use ${CURRENT_MONTH}"
+  printf '%s\n' "$MONTH_DRY"
+fi
+
 # --- 6. Finder-method trash + undo (macOS) -------------------------------
 if [[ "$IS_DARWIN" -eq 1 ]]; then
   PUTBACK_DIR="${WORK}/putback"

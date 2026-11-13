@@ -629,7 +629,7 @@ pub fn render_rules(ruleset: &Ruleset, color: bool) -> String {
             } => {
                 if *by_date {
                     out.push_str(&format!(
-                        "   action: move -> {destination} (grouped by month)\n"
+                        "   action: move -> {destination} (YYYY-MM from the file's age)\n"
                     ));
                 } else {
                     out.push_str(&format!("   action: move -> {destination}\n"));

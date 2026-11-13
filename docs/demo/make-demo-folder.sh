@@ -48,7 +48,9 @@ mk ".DS_Store"                                   6 "1 day ago"
 mkdir -p "$D/old-projects"
 # touch -d backdates mtime only. Date Added (macOS) and birth stay "now",
 # so Old installers / Old archives will not match these files. That is
-# the v0.3.0 age rule: a copied old .dmg is not old.
+# the age rule: a copied old .dmg is not old. Screenshots are named
+# 2026-10, but by_date uses that same age, so they land in the current
+# month (2026-11 for the 0.5.0 demo), not the month in the file name.
 cat <<VARS
 export TIDY_HOME=$DEMO/home
 export TIDY_CONFIG_DIR="$DEMO/home/.config"

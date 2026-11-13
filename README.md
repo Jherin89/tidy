@@ -40,6 +40,7 @@ tidy undo       # changed your mind? put everything back
 - [macOS smoke test](#macos-smoke-test)
 - [FAQ and troubleshooting](#faq-and-troubleshooting)
 - [Contributing](#contributing)
+- [Notarizing the Mac binary](#notarizing-the-mac-binary)
 - [License](#license)
 
 ## Why tidy?
@@ -56,9 +57,9 @@ tidy works the other way around:
 
 - **Preview table by default.** Shows file, matched rule, action, destination, and size, plus totals per rule and per action.
 - **Rules that match on extension, name pattern, age, size, and duplicate copies**, combined however you like. The first matching rule wins.
-- **Age from Date Added on a Mac.** `older_than` uses Finder's Date Added when it is available, otherwise the later of created (birth) and modified. A `.dmg` you just copied into Downloads is not old, even if its modified time is months ago. `tidy explain` shows which stamp it used.
+- **Age from Date Added on a Mac.** `older_than`, the duplicate keeper, and `by_date` month folders (`YYYY-MM`) all use Finder's Date Added when it is available, otherwise the later of created (birth) and modified. A `.dmg` you just copied into Downloads is not old, even if its modified time is months ago, and a screenshot lands in the month it was added, not the month in its name. `tidy explain` shows which stamp it used.
 - **Package documents as one item.** Only iWork / TextEdit packages (`.pages`, `.numbers`, `.key`, `.rtfd`) are moved or trashed as a whole. Other folders are left alone, even when the name looks like a file (`Ubuntu.dmg`, `Vacation.png`). Preview marks packages with a trailing `/`.
-- **Two actions:** move to any folder (created when needed, with `~` expansion and optional `YYYY-MM` subfolders), or send to the system **Trash**.
+- **Two actions:** move to any folder (created when needed, with `~` expansion and optional `YYYY-MM` subfolders from the file's age), or send to the system **Trash**.
 - **Sensible built-in rules**, so it works with no setup. The first rule sends extra byte-identical copies to the Trash. Run `tidy init` to get an editable copy.
 - **`tidy explain FILE`** shows why that file would be skipped, matched, or left in place.
 - **Undo log** for every applied run, and `tidy undo` to reverse the latest one.
@@ -107,7 +108,7 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
    This adds the [jherin89/tap](https://github.com/Jherin89/homebrew-tap) tap and installs the prebuilt binary: universal on macOS, static musl on Linux. Each download is checked against a pinned SHA-256.
 4. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.4.0
+   tidy --version     # → tidy 0.5.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
 5. **Later:** `brew upgrade tidy` updates it, and `brew uninstall tidy` removes it. If you set up the background watcher or daily job, run `tidy watch --uninstall` and `tidy schedule --uninstall` first.
@@ -115,43 +116,43 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
 ### Option B: download a release archive
 
 1. **Download** the archive for your machine from the [latest release](https://github.com/Jherin89/tidy/releases/latest):
-   - Mac (Apple Silicon or Intel): `tidy-0.4.0-universal-apple-darwin.tar.gz`
-   - Linux x86_64: `tidy-0.4.0-x86_64-unknown-linux-musl.tar.gz`
-   - Linux aarch64: `tidy-0.4.0-aarch64-unknown-linux-musl.tar.gz`
+   - Mac (Apple Silicon or Intel): `tidy-0.5.0-universal-apple-darwin.tar.gz`
+   - Linux x86_64: `tidy-0.5.0-x86_64-unknown-linux-musl.tar.gz`
+   - Linux aarch64: `tidy-0.5.0-aarch64-unknown-linux-musl.tar.gz`
 2. **Open Terminal.**
 3. **Optional: check the download.** Compare this output with the `.sha256` file on the release page (`shasum -a 256` writes `hash  filename`):
    ```bash
    cd ~/Downloads
-   shasum -a 256 tidy-0.4.0-universal-apple-darwin.tar.gz
+   shasum -a 256 tidy-0.5.0-universal-apple-darwin.tar.gz
    ```
 4. **Unpack it** (use the name you downloaded):
    ```bash
-   tar -xzf tidy-0.4.0-universal-apple-darwin.tar.gz
+   tar -xzf tidy-0.5.0-universal-apple-darwin.tar.gz
    ```
-5. **On a Mac, remove the quarantine flag.** The binary isn't notarized, so without this step macOS says it "cannot be opened because the developer cannot be verified":
+5. **On a Mac, remove the quarantine flag.** The 0.5.0 release archive is still unsigned: signing and notarization run in CI only after Apple Developer secrets are configured (see [Notarizing the Mac binary](#notarizing-the-mac-binary)). Until a release is notarized, macOS says the binary "cannot be opened because the developer cannot be verified" unless you clear quarantine after unpacking:
    ```bash
-   xattr -d com.apple.quarantine tidy-0.4.0-universal-apple-darwin/tidy
+   xattr -d com.apple.quarantine tidy-0.5.0-universal-apple-darwin/tidy
    ```
-   If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step.
+   If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step. A Homebrew install does not need it either. Once a future release is signed and notarized, that archive can skip this step. Gatekeeper checks notarization online; the tar.gz itself is not stapled.
 6. **Put `tidy` on your PATH.** Choose one:
    - **For your user only (no password needed):**
      ```bash
      mkdir -p ~/.local/bin
-     mv tidy-0.4.0-universal-apple-darwin/tidy ~/.local/bin/
+     mv tidy-0.5.0-universal-apple-darwin/tidy ~/.local/bin/
      echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
      source ~/.zshrc
      ```
    - **System-wide (asks for your password):**
      ```bash
      sudo mkdir -p /usr/local/bin
-     sudo mv tidy-0.4.0-universal-apple-darwin/tidy /usr/local/bin/
+     sudo mv tidy-0.5.0-universal-apple-darwin/tidy /usr/local/bin/
      ```
 7. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.4.0
+   tidy --version     # → tidy 0.5.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.4.0-*`
+8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.5.0-*`
 
 ### Option C: build from source with Rust (any Mac, Linux, or Windows)
 
@@ -163,9 +164,9 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
 2. **macOS only:** if you're asked to install the *Command Line Developer Tools*, click **Install** (or run `xcode-select --install`).
 3. **Build and install tidy:**
    ```bash
-   cargo install --git https://github.com/Jherin89/tidy
+   cargo install --git https://github.com/Jherin89/tidy --tag v0.5.0
    ```
-   This takes a minute or two and puts `tidy` in `~/.cargo/bin`, which rustup already added to your PATH.
+   This takes a minute or two and puts `tidy` in `~/.cargo/bin`, which rustup already added to your PATH. Drop `--tag v0.5.0` to build the default branch instead.
 4. **Verify:** `tidy --version`
 
 > **Note on the name:** the command is `tidy`, but the Cargo *package* is named **`tidy-dl`**, because `tidy` on crates.io belongs to an unrelated project. Install from this repository as shown above. `cargo install tidy` would install that other project.
@@ -195,12 +196,12 @@ invoice-2026-03 (1).pdf                  Duplicates    trash   Trash (copy of in
 invoice-2026-03.pdf                      PDFs          move    ~/Documents/PDFs/invoice-2026-03.pdf                                    188 KB
 Q3-pipeline-forecast.xlsx                Spreadsheets  move    ~/Documents/Spreadsheets/Q3-pipeline-forecast.xlsx                      349 KB
 Q4-plan.pages/                           Documents     move    ~/Documents/Downloads/Q4-plan.pages                                     19 B
-Screenshot 2026-10-01 at 9.14.22 AM.png  Screenshots   move    ~/Pictures/Screenshots/2026-10/Screenshot 2026-10-01 at 9.14.22 AM.png  500 KB
+Screenshot 2026-10-01 at 9.14.22 AM.png  Screenshots   move    ~/Pictures/Screenshots/2026-11/Screenshot 2026-10-01 at 9.14.22 AM.png  500 KB
 
 Summary
   matched      16   152 MB
   unmatched     7   left in place
-  skipped       3
+  skipped       4
 ...
 Unmatched  (left in place)
   Docker.dmg                    627 MB
@@ -209,9 +210,9 @@ Unmatched  (left in place)
 ...
 Skipped
   .DS_Store                   hidden
-  Ubuntu.dmg/                 folder, not a file
   old-projects/               directory
   ubuntu-24.04.iso.crdownload partial download
+  Ubuntu.dmg/                 folder, not a file
 
 Dry run. Nothing was changed.
 Re-run with --apply to perform these actions.
@@ -220,7 +221,7 @@ Re-run with --apply to perform these actions.
 - **file**: a top-level file, or a document package (`.pages`, `.numbers`, `.key`, `.rtfd`), shown with a trailing `/`. Ordinary subfolders are never entered. A folder named like a file (`Ubuntu.dmg/`) is skipped.
 - **rule**: the first rule that matched it.
 - **action**: `move` (green) or `trash` (yellow).
-- **destination**: where it will go. `~` means your home folder. If a file with that name is already there, you'll see a ` (1)` suffix.
+- **destination**: where it will go. `~` means your home folder. A `by_date` rule adds a `YYYY-MM` folder from the file's age (Date Added on a Mac, otherwise the later of created and modified), not from the file name and not from an older modified time. The sample screenshot is named October 2026, but the demo only backdates mtime, so it lands in `2026-11`. If a file with that name is already there, you'll see a ` (1)` suffix.
 - **Unmatched** files match no rule and stay where they are. `zoom-installer.pkg` and `Slack-4.41.97-macOS.dmg` have old modified times, but Date Added / created is now, so the 30-day "Old installers" rule does not apply. `Q4-plan.pages/` is a package directory and is filed as one Documents item.
 - **Skipped** files are never touched: hidden files, ordinary folders, folders named like files, symlinks, and downloads still in progress.
 - **Duplicate copies** show a destination like `Trash (copy of invoice-2026-03.pdf)`. The extra copy goes to the Trash. The original (the copy that has been in the folder longest) stays put and is filed by its normal rule, here **PDFs**.
@@ -392,7 +393,7 @@ glob = ["Screenshot*", "Screen Shot*"]      # file-name pattern(s); any one may 
 extensions = ["png", "jpg"]                   # AND it must be one of these types
 action = "move"
 destination = "~/Pictures/Screenshots"
-by_date = true                                # → ~/Pictures/Screenshots/2026-10/
+by_date = true                                # → ~/Pictures/Screenshots/2026-11/ (age, not the name)
 
 # 2. Match by age: installers that have been in this folder more than 30 days
 #    go to the Trash. Age is Date Added on a Mac, so a Finder copy of an old
@@ -460,7 +461,7 @@ Within one condition, any value may match (OR). Different conditions must all ma
 
 | Action | Fields | Effect |
 | --- | --- | --- |
-| `move` | `destination` (required), `by_date` (optional) | Moves the file. `~` is your home folder. Missing folders are created. Existing names get ` (1)`, ` (2)`… |
+| `move` | `destination` (required), `by_date` (optional) | Moves the file. `~` is your home folder. Missing folders are created. `by_date` adds a `YYYY-MM` folder from the file's age (Date Added on a Mac, otherwise the later of created and modified), not from the file name. Existing names get ` (1)`, ` (2)`… |
 | `trash` | none | Sends the file to the system Trash. |
 
 ## Built-in rules
@@ -553,7 +554,7 @@ What it does, in order, each step printing `PASS` or `FAIL`:
 2. Create sample files in the temp folder, including a `.dmg` with an old modified time (must **not** be planned for trash, because Date Added / created is now), an iWork-style package (`Quarterly.pages/` with files inside), and a folder named `Ubuntu.dmg/` (must be skipped).
 3. Dry-run: the package is listed as one item with a trailing `/`; an unlisted folder `skip-me/` is skipped; `Ubuntu.dmg/` is skipped as `folder, not a file`.
 4. `--apply` moves the whole `.pages` folder with contents intact; `tidy undo` restores it.
-5. `tidy watch --install --print --rules … --older-than 7d` includes those flags in the plist. `tidy schedule --print --rules … --older-than 7d --at 10:00` includes `--apply`, `StartCalendarInterval`, and a distinct daily label.
+5. `tidy watch --install --print --rules … --older-than 7d` includes those flags in the plist. `tidy schedule --print --rules … --older-than 7d --at 10:00` includes `--apply`, `StartCalendarInterval`, and a distinct daily label. A screenshot with an old mtime is planned into the current `YYYY-MM` folder, not the mtime month.
 6. On macOS only: Finder-method trash of one uniquely named temp file, then `tidy undo` (names it for **Put Back**) and a restore from Trash.
 7. On macOS only: `tidy watch --install` with **real** `launchctl`, a temp watch folder, and a temp rules file, using the distinct label `com.github.jherin89.tidy.smoke`. `launchctl print gui/$UID/<label>` must show it loaded. A file dropped into the watch folder is filed. A real tidy agent under the default label is left alone.
 8. On macOS only: `tidy schedule --install` with a distinct daily smoke label, then `--status` and `--uninstall`. The watch smoke agent is left alone.
@@ -582,7 +583,7 @@ Homebrew's `tidy-html5` formula and macOS's own `/usr/bin/tidy` are HTML Tidy, a
 
 <details><summary><b>"tidy" cannot be opened because the developer cannot be verified</b></summary>
 
-The binary isn't notarized. Run `xattr -d com.apple.quarantine "$(which tidy)"`, or go to **System Settings → Privacy & Security** and click **Open Anyway**.
+The 0.5.0 release archive is not signed or notarized yet. After unpacking it, run `xattr -d com.apple.quarantine "$(which tidy)"`, or go to **System Settings → Privacy & Security** and click **Open Anyway**. A Homebrew install does not need this. Signing and notarization turn on in CI once the Apple Developer secrets are set; see [Notarizing the Mac binary](#notarizing-the-mac-binary). Until then, do not expect Gatekeeper to accept the GitHub archive on its own.
 </details>
 
 <details><summary><b><code>zsh: command not found: tidy</code></b></summary>
@@ -592,7 +593,7 @@ The folder you put it in isn't on your PATH. For `~/.local/bin`: `echo 'export P
 
 <details><summary><b><code>bad CPU type in executable</code></b></summary>
 
-You unpacked a single-architecture build on the other Mac chip. The 0.4 release archive `tidy-0.4.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
+You unpacked a single-architecture build on the other Mac chip. The 0.5 release archive `tidy-0.5.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
 </details>
 
 <details><summary><b><code>Operation not permitted</code> when reading ~/Downloads</b></summary>
@@ -612,7 +613,7 @@ Look at the preview. It's either **Unmatched** (no rule fits, often because of a
 
 <details><summary><b>I copied an old .dmg into Downloads and tidy wanted to trash it / no longer does</b></summary>
 
-Age is Date Added on a Mac, not the file's modified time. A disk image you copied today has Date Added of today, even if its modified time is from last year. On Linux, and when Date Added is missing, tidy uses the later of created (birth) and modified. `tidy explain that.dmg` shows which stamp it used.
+Age is Date Added on a Mac, not the file's modified time. A disk image you copied today has Date Added of today, even if its modified time is from last year. On Linux, and when Date Added is missing, tidy uses the later of created (birth) and modified. `tidy explain that.dmg` shows which stamp it used. The same stamp picks the `YYYY-MM` folder when `by_date = true`, so a screenshot named `2026-10-…` that you added in November goes to `2026-11`. `tidy explain` prints that source next to the destination, for example `(date added)`.
 </details>
 
 <details><summary><b>Why did my .pages document stay put / get moved as a folder?</b></summary>
@@ -665,10 +666,60 @@ cargo test
 - The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically. New dependencies must build on that compiler.
 - Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads, Trash, or `launchctl`. Please keep it that way. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plists (watch and daily).
 - On a Mac, `scripts/mac-smoke-test.sh` is the isolated real-`launchctl` / Finder check. It uses `TIDY_LAUNCHD_LABEL` and a temp folder; do not point it at `~/Downloads`.
-- CI runs fmt, clippy, and tests on Ubuntu and macOS 14. The macOS job lints `tidy watch --install --print` (including `--rules` / `--older-than`) with `plutil` and runs a real-Trash test only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
-- Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`), attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists.
+- CI runs fmt, clippy, and tests on Ubuntu and macOS 15. The macOS job lints both generated plists with `plutil`: `tidy watch --install --print` (plain and with `--rules` / `--older-than`) and `tidy schedule --print` (plain and with `--rules` / `--older-than` / `--at`). It checks that the daily plist contains `--apply`, `StartCalendarInterval`, and the daily label, and that it is not a KeepAlive watch agent. The real-Trash test runs only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
+- Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`) on macOS 15 and Ubuntu 24.04, attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists. The macOS job signs and notarizes only when the Apple secrets below are configured; otherwise it ships the unsigned binary and the release still succeeds.
 - To refresh the Homebrew formula in a local tap clone: `scripts/bump-homebrew.sh /path/to/homebrew-tap` (downloads checksums with your `gh` login; add `--commit` to commit, and `--push` to push). `--dry-run` or `--sha-from-dir` renders the formula without a release.
-- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (also `dry-run.tape`, `explain.tape`, `undo.tape`) (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`.
+- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (also `dry-run.tape`, `explain.tape`, `undo.tape`) (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`. Screenshot month folders in that demo follow the current month, because the script backdates mtime only.
+
+## Notarizing the Mac binary
+
+The 0.5.0 GitHub archive is **not** signed or notarized. The release workflow already contains the signing step, and it skips cleanly until the secrets below exist. Homebrew installs do not use that archive's quarantine flag. After you unpack an unsigned release archive on a Mac, clear quarantine:
+
+```bash
+xattr -d com.apple.quarantine tidy-0.5.0-universal-apple-darwin/tidy
+```
+
+A future release can drop that note once a notarized build has shipped. Do not treat the 0.5.0 archive as signed.
+
+When the secrets are set, the `macos-universal` job imports a Developer ID certificate, signs `dist/bin/tidy` with the hardened runtime (`--options runtime --timestamp`, identifier `com.github.jherin89.tidy`, no entitlements — the CLI does not need JIT or unsigned executable memory), and submits a zip to `notarytool --wait`. The signed binary is then packed into the same `tidy-<version>-universal-apple-darwin.tar.gz` as today. `xcrun stapler` is not used: a bare Mach-O inside a `.tar.gz` cannot be stapled. Gatekeeper can still check the notarization ticket online. If signing secrets are only partly set, or signing is configured without a complete notary login, the job fails and names the missing secret *names*. It does not publish a half-signed or signed-but-unnotarized binary.
+
+Do this in order:
+
+1. Enroll in the Apple Developer Program ($99/year): <https://developer.apple.com/programs/>
+2. Create a **Developer ID Application** certificate (Certificates, Identifiers & Profiles). Make the CSR in Keychain Access.
+3. Export that certificate from Keychain Access as a `.p12` with a password.
+4. Base64-encode it on a Mac: `base64 -i developer-id.p12 | pbcopy`
+5. Create notarization credentials, either:
+   - an app-specific password at <https://appleid.apple.com> (Sign-In and Security → App-Specific Passwords), or
+   - an App Store Connect API key (Users and Access → Integrations → App Store Connect API) and download the `.p8`.
+6. In the Jherin89/tidy GitHub repo, open **Settings → Secrets and variables → Actions** and add the secrets below. Paste the values there. Do not commit them.
+7. Re-run the release workflow, or cut a new patch tag, after the secrets are in place. The macOS job then signs and notarizes. Until then it skips, and the unsigned archive is attached as today.
+
+Signing (all three are required to sign):
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_CERTIFICATE_P12_BASE64` | Base64 of the Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Certificate name, for example `Developer ID Application: Jordan Herin (TEAMID)` |
+
+Notary auth, either the Apple ID trio:
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_ID` | Apple ID email |
+| `APPLE_APP_PASSWORD` | App-specific password |
+| `APPLE_TEAM_ID` | Team ID (required for Apple ID auth) |
+
+or the App Store Connect API key trio:
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_API_ISSUER_ID` | Issuer ID |
+| `APPLE_API_KEY_ID` | Key ID |
+| `APPLE_API_KEY_P8` | Contents of the `.p8` file |
+
+`APPLE_TEAM_ID` may also be set with the API key. It is required for the Apple ID path. If both notary sets are present, the workflow uses the API key.
 
 ## License
 

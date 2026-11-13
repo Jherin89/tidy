@@ -715,6 +715,69 @@ destination = "Filed"
         .assert()
         .failure()
         .stderr(predicate::str::contains("--apply"));
+
+    tidy(root)
+        .args(["watch", "--print"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`--print` is only valid with `tidy watch --install --print`",
+        ));
+
+    tidy(root)
+        .args(["watch", "--install", "--print"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<string>watch</string>"));
+
+    tidy(root)
+        .args(["watch", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`--force` is only valid with `tidy watch --install`",
+        ));
+
+    tidy(root)
+        .args(["watch", "--uninstall", "--rules"])
+        .arg(&rules)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not take --rules"));
+
+    tidy(root)
+        .args(["schedule", "--print"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<string>--apply</string>"));
+
+    tidy(root)
+        .args(["schedule", "--install", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--json"));
+
+    tidy(root)
+        .args(["schedule", "--status", "--at", "09:00"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not take --rules, --older-than, --at",
+        ));
+
+    tidy(root)
+        .args(["schedule", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`--force` is only valid with `tidy schedule --install`",
+        ));
+
+    tidy(root)
+        .args(["--apply", "schedule", "--print"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--apply"));
 }
 
 #[cfg(unix)]

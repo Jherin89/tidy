@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.1
@@ -34,7 +34,7 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: cargo test
       - name: Test
-        if: matrix.os == 'macos-14'
+        if: startsWith(matrix.os, 'macos')
         env:
           # The real-Trash test is a no-op unless this is set. Other tests
           # point trash at a temp dir via TIDY_FAKE_TRASH.
@@ -44,14 +44,16 @@ jobs:
           # method, when this variable is unset, stays Finder.
           TIDY_TRASH_METHOD: nsfilemanager
         run: cargo test
-      - name: Lint the launchd plist
-        if: matrix.os == 'macos-14'
+      - name: Lint the launchd plists
+        if: startsWith(matrix.os, 'macos')
         run: |
           set -euo pipefail
           cargo build
           plist="${RUNNER_TEMP}/tidy.plist"
           ./target/debug/tidy watch --install --print > "${plist}"
           plutil -lint "${plist}"
+          grep -q '<string>watch</string>' "${plist}"
+          grep -q '<key>KeepAlive</key>' "${plist}"
           rules="${RUNNER_TEMP}/rules.toml"
           cat > "${rules}" <<'EOF'
           [[rules]]
@@ -65,3 +67,26 @@ jobs:
           plutil -lint "${plist_flags}"
           grep -q -- "--rules" "${plist_flags}"
           grep -q -- "--older-than" "${plist_flags}"
+          daily="${RUNNER_TEMP}/tidy-daily.plist"
+          ./target/debug/tidy schedule --print > "${daily}"
+          plutil -lint "${daily}"
+          grep -q -- "--apply" "${daily}"
+          grep -q '<key>StartCalendarInterval</key>' "${daily}"
+          grep -q 'com.github.jherin89.tidy.daily' "${daily}"
+          if grep -q '<key>KeepAlive</key>' "${daily}"; then
+            echo "daily plist must not be a KeepAlive watch agent" >&2
+            exit 1
+          fi
+          daily_flags="${RUNNER_TEMP}/tidy-daily-flags.plist"
+          ./target/debug/tidy schedule --print --rules "${rules}" --older-than 7d --at 10:00 > "${daily_flags}"
+          plutil -lint "${daily_flags}"
+          grep -q -- "--apply" "${daily_flags}"
+          grep -q -- "--rules" "${daily_flags}"
+          grep -q -- "--older-than" "${daily_flags}"
+          grep -q '<key>Hour</key>' "${daily_flags}"
+          grep -q '<key>Minute</key>' "${daily_flags}"
+          grep -q 'com.github.jherin89.tidy.daily' "${daily_flags}"
+          if grep -q '<key>KeepAlive</key>' "${daily_flags}"; then
+            echo "daily plist must not be a KeepAlive watch agent" >&2
+            exit 1
+          fi

@@ -49,6 +49,8 @@ pub enum Outcome {
         destination: String,
         destination_path: Option<PathBuf>,
         copy_of: Option<String>,
+        /// Set when `by_date` chose `YYYY-MM` from this age stamp.
+        month_source: Option<String>,
     },
     Unmatched,
 }
@@ -182,7 +184,9 @@ pub fn explain_path_with(
 
             let explained = walk_rules(rules, &entry, now, &view.duplicates);
             let winner = explained.iter().find(|rule| rule.mark == RuleMark::Wins);
-            let outcome = outcome_for(&plan, &name, winner.map(|rule| rule.name.as_str()));
+            let winner_name = winner.map(|rule| rule.name.as_str());
+            let month_source = month_source_for(rules, winner_name, &entry);
+            let outcome = outcome_for(&plan, &name, winner_name, month_source);
             Ok(Explanation {
                 file_name: name,
                 path: child,
@@ -229,7 +233,27 @@ fn walk_rules(
     out
 }
 
-fn outcome_for(plan: &Plan, name: &str, winner: Option<&str>) -> Outcome {
+fn month_source_for(
+    rules: &Ruleset,
+    winner: Option<&str>,
+    file: &scan::FileEntry,
+) -> Option<String> {
+    let name = winner?;
+    let rule = rules.rules.iter().find(|rule| rule.name == name)?;
+    match &rule.action {
+        crate::rules::Action::Move { by_date: true, .. } => {
+            Some(file.age_kind.as_str().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn outcome_for(
+    plan: &Plan,
+    name: &str,
+    winner: Option<&str>,
+    month_source: Option<String>,
+) -> Outcome {
     let Some(rule) = winner else {
         return Outcome::Unmatched;
     };
@@ -240,6 +264,7 @@ fn outcome_for(plan: &Plan, name: &str, winner: Option<&str>) -> Outcome {
             destination: String::new(),
             destination_path: None,
             copy_of: None,
+            month_source,
         };
     };
     Outcome::Matched {
@@ -252,6 +277,7 @@ fn outcome_for(plan: &Plan, name: &str, winner: Option<&str>) -> Outcome {
         destination: action.destination_display.clone(),
         destination_path: action.destination.clone(),
         copy_of: action.copy_of.clone(),
+        month_source,
     }
 }
 
@@ -355,11 +381,18 @@ pub fn render(explanation: &Explanation, env: &Env, color: bool) -> String {
             rule,
             action,
             destination,
+            month_source,
             ..
         } => {
             line(&mut out, &format!("  {:<12} {rule}", "rule"));
             line(&mut out, &format!("  {:<12} {action}", "action"));
-            line(&mut out, &format!("  {:<12} {destination}", "destination"));
+            match month_source {
+                Some(source) => line(
+                    &mut out,
+                    &format!("  {:<12} {destination}  ({source})", "destination"),
+                ),
+                None => line(&mut out, &format!("  {:<12} {destination}", "destination")),
+            }
         }
         Outcome::Unmatched => line(&mut out, "  no rule matches; left in place"),
         Outcome::Skipped { .. } => {}
@@ -415,6 +448,7 @@ pub fn render_json(explanation: &Explanation) -> Result<String, Error> {
             destination,
             destination_path,
             copy_of,
+            month_source,
         } => serde_json::json!({
             "status": "matched",
             "rule": rule,
@@ -422,6 +456,7 @@ pub fn render_json(explanation: &Explanation) -> Result<String, Error> {
             "destination": destination,
             "destination_path": destination_path.as_ref().map(|p| p.display().to_string()),
             "copy_of": copy_of,
+            "month_source": month_source,
         }),
         Outcome::Unmatched => serde_json::json!({
             "status": "unmatched",

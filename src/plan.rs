@@ -277,7 +277,7 @@ fn plan_one(
         } => {
             let mut dir = resolve_destination(destination, &env.home, folder);
             if *by_date {
-                dir = dir.join(month_bucket(file.modified));
+                dir = dir.join(month_bucket(file.age));
             }
             let path = choose_destination(&dir, &file.name, reserved)?;
             let display = contract_home(&path, &env.home);
@@ -305,12 +305,17 @@ pub fn resolve_destination(raw: &str, home: &Path, folder: &Path) -> PathBuf {
     }
 }
 
-/// `YYYY-MM` in the local timezone, from the file's modified time.
+/// `YYYY-MM` in the local timezone.
+///
+/// Pass the file's resolved age ([`FileEntry::age`]): Date Added when that
+/// stamp exists, otherwise the later of created and modified. That is the
+/// same timestamp `older_than` and the duplicate keeper use. The helper
+/// itself only formats a [`SystemTime`].
 ///
 /// `chrono` stays because the standard library cannot convert a timestamp to
 /// local time. The bucket has to follow the machine's timezone, including DST.
-pub fn month_bucket(modified: SystemTime) -> String {
-    let Ok(dur) = modified.duration_since(SystemTime::UNIX_EPOCH) else {
+pub fn month_bucket(when: SystemTime) -> String {
+    let Ok(dur) = when.duration_since(SystemTime::UNIX_EPOCH) else {
         return "1970-01".to_string();
     };
     let secs = i64::try_from(dur.as_secs()).unwrap_or(i64::MAX);
@@ -523,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn by_date_appends_the_local_month_from_mtime() {
+    fn by_date_appends_the_local_month_from_resolved_age() {
         let tmp = tempfile::tempdir().unwrap();
         let env = test_env(tmp.path());
         let folder = env.home.join("Downloads");
@@ -534,7 +539,8 @@ mod tests {
             b"img",
             Duration::from_secs(40 * 86400),
         );
-        let bucket = month_bucket(entry.modified);
+        let bucket = month_bucket(entry.age);
+        assert_eq!(bucket, month_bucket(entry.modified));
         let set = ruleset(
             r#"
             [[rules]]
@@ -567,6 +573,169 @@ mod tests {
                 .join("Screen Shot 1.png")
         );
         assert_eq!(plan.skipped.len(), 1);
+    }
+
+    struct FixedTimes {
+        added: Option<SystemTime>,
+        created: Option<SystemTime>,
+    }
+
+    impl crate::age::AgeProbe for FixedTimes {
+        fn probe(&self, _path: &Path, meta: &fs::Metadata) -> crate::age::FileTimes {
+            crate::age::FileTimes {
+                modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                created: self.created,
+                added: self.added,
+            }
+        }
+    }
+
+    fn screenshot_rules() -> Ruleset {
+        ruleset(
+            r#"
+            [[rules]]
+            name = "Shots"
+            glob = "shot.png"
+            action = "move"
+            destination = "~/Pictures/Screenshots"
+            by_date = true
+            "#,
+        )
+    }
+
+    #[test]
+    fn by_date_uses_recent_date_added_not_an_old_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = test_env(tmp.path());
+        let folder = env.home.join("Downloads");
+        fs::create_dir_all(&folder).unwrap();
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(400 * 86400);
+        let mut entry = file_at(
+            &folder,
+            "shot.png",
+            b"img",
+            Duration::from_secs(400 * 86400),
+        );
+        entry.age = now;
+        entry.age_kind = crate::age::AgeKind::DateAdded;
+        let recent = month_bucket(entry.age);
+        let stale = month_bucket(entry.modified);
+        assert_ne!(recent, stale);
+        assert_eq!(stale, month_bucket(old));
+
+        let plan = plan_entries(
+            &env,
+            &folder,
+            vec![entry],
+            vec![],
+            &screenshot_rules(),
+            now,
+            &DuplicateIndex::empty(),
+        )
+        .unwrap();
+        let dest = plan.actions[0].destination.as_ref().unwrap();
+        assert_eq!(
+            dest,
+            &env.home
+                .join("Pictures/Screenshots")
+                .join(&recent)
+                .join("shot.png")
+        );
+        assert!(!dest.components().any(|c| c.as_os_str() == stale.as_str()));
+
+        let probed = plan_folder_with(
+            &env,
+            &folder,
+            &screenshot_rules(),
+            None,
+            now,
+            &FixedTimes {
+                added: Some(now),
+                created: Some(old),
+            },
+        )
+        .unwrap();
+        let probed_dest = probed.actions[0].destination.as_ref().unwrap();
+        assert_eq!(
+            probed_dest,
+            &env.home
+                .join("Pictures/Screenshots")
+                .join(&recent)
+                .join("shot.png")
+        );
+        assert_eq!(
+            probed.actions[0].file.age_kind,
+            crate::age::AgeKind::DateAdded
+        );
+    }
+
+    #[test]
+    fn by_date_uses_an_old_resolved_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = test_env(tmp.path());
+        let folder = env.home.join("Downloads");
+        fs::create_dir_all(&folder).unwrap();
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(400 * 86400);
+        let mut entry = file_at(&folder, "shot.png", b"img", Duration::from_secs(1));
+        entry.age = old;
+        entry.age_kind = crate::age::AgeKind::Created;
+        let bucket = month_bucket(old);
+        assert_ne!(bucket, month_bucket(entry.modified));
+
+        let plan = plan_entries(
+            &env,
+            &folder,
+            vec![entry],
+            vec![],
+            &screenshot_rules(),
+            now,
+            &DuplicateIndex::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.actions[0].destination.as_ref().unwrap(),
+            &env.home
+                .join("Pictures/Screenshots")
+                .join(&bucket)
+                .join("shot.png")
+        );
+
+        fs::write(folder.join("old-shot.png"), b"img").unwrap();
+        let probed = plan_folder_with(
+            &env,
+            &folder,
+            &ruleset(
+                r#"
+                [[rules]]
+                name = "Shots"
+                glob = "old-shot.png"
+                action = "move"
+                destination = "~/Pictures/Screenshots"
+                by_date = true
+                "#,
+            ),
+            None,
+            now,
+            &FixedTimes {
+                added: Some(old),
+                created: Some(now),
+            },
+        )
+        .unwrap();
+        assert_eq!(probed.actions.len(), 1);
+        assert_eq!(
+            probed.actions[0].file.age_kind,
+            crate::age::AgeKind::DateAdded
+        );
+        assert_eq!(
+            probed.actions[0].destination.as_ref().unwrap(),
+            &env.home
+                .join("Pictures/Screenshots")
+                .join(&bucket)
+                .join("old-shot.png")
+        );
     }
 
     #[test]
