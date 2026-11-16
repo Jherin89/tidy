@@ -58,6 +58,15 @@
 #       time, and it is not a date parsed from the file name.
 #   action = "trash"
 #       Sends the file to the system Trash. tidy never permanently deletes.
+#   action = "keep"
+#       Claims the file and leaves it where it is. Later rules are not
+#       evaluated for that file, including a later duplicate or older_than
+#       rule that would otherwise move or trash it. --apply does not touch
+#       the file and writes no undo entry. destination and by_date are
+#       rejected. The command-line --older-than filter still runs first, so
+#       a file younger than that filter is skipped and never reaches keep.
+#       A kept file stays in the duplicate index: a different file can still
+#       be an extra copy of it.
 #
 # Name collisions never overwrite. tidy inserts " (1)", " (2)", … before the
 # extension (and before a trailing .tar.gz / .tar.bz2 / .tar.xz / .tar.zst).
@@ -158,3 +167,9 @@ destination = "~/Documents/Books"
 # smaller_than = "5MB"
 # older_than = "14d"
 # action = "trash"
+#
+# [[rules]]
+# name = "Keep tax PDFs"
+# glob = ["*tax*", "*1099*"]
+# extensions = ["pdf"]
+# action = "keep"

@@ -10,7 +10,7 @@ use tidy::apply::apply_plan;
 use tidy::plan::{plan_folder, plan_folder_with, ActionKind, ActionStatus};
 use tidy::rules::{load_rules, Ruleset};
 use tidy::trash::FakeTrasher;
-use tidy::undo::{undo_latest, UndoOutcome};
+use tidy::undo::{preview_latest, undo_latest, UndoOutcome};
 use tidy::Env;
 
 fn plan_aged(
@@ -1060,4 +1060,293 @@ fn duplicate_keeper_is_the_copy_that_has_been_in_the_folder_longest() {
     assert_eq!(keeper_explained.winner(), Some("PDFs"));
     let text = tidy::explain::render(&keeper_explained, &env, false);
     assert!(text.contains("longest") || text.contains("PDFs"), "{text}");
+}
+
+fn rules_text(env: &Env, text: &str) -> Ruleset {
+    let path = env.config_dir.join("keep-rules.toml");
+    fs::create_dir_all(&env.config_dir).unwrap();
+    fs::write(&path, text).unwrap();
+    load_rules(env, Some(&path), false).unwrap()
+}
+
+#[test]
+fn keep_stops_later_rules_and_apply_writes_no_undo_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    fs::create_dir_all(&folder).unwrap();
+    let rules = rules_text(
+        &env,
+        r#"
+        [[rules]]
+        name = "Keep invoices"
+        glob = "invoice*"
+        action = "keep"
+
+        [[rules]]
+        name = "Duplicates"
+        duplicate = true
+        action = "trash"
+
+        [[rules]]
+        name = "Old pdfs"
+        extensions = ["pdf"]
+        older_than = "30d"
+        action = "trash"
+
+        [[rules]]
+        name = "Notes"
+        extensions = ["txt"]
+        action = "move"
+        destination = "~/Documents/Downloads"
+        "#,
+    );
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-invoice",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-invoice",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(
+        &folder.join("other.pdf"),
+        b"other-old",
+        Duration::from_secs(40 * 86400),
+    );
+    write_aged(&folder.join("notes.txt"), b"hello", Duration::from_secs(10));
+
+    let mut plan = plan_aged(&env, &folder, &rules, None, SystemTime::now());
+    {
+        let action = |name: &str| {
+            plan.actions
+                .iter()
+                .find(|item| item.file.name == name)
+                .unwrap_or_else(|| panic!("{name} was not planned"))
+                .clone()
+        };
+        let invoice = action("invoice.pdf");
+        assert_eq!(invoice.rule_name, "Keep invoices");
+        assert_eq!(invoice.kind, ActionKind::Keep);
+        assert_eq!(invoice.status, ActionStatus::Kept);
+        assert!(invoice.destination_display.contains("kept"));
+        let copy = action("invoice (1).pdf");
+        assert_eq!(copy.rule_name, "Keep invoices");
+        assert_eq!(copy.kind, ActionKind::Keep);
+        assert_eq!(action("other.pdf").rule_name, "Old pdfs");
+        assert_eq!(action("other.pdf").kind, ActionKind::Trash);
+        assert_eq!(action("notes.txt").kind, ActionKind::Move);
+    }
+
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    assert_eq!(
+        fs::read(folder.join("invoice.pdf")).unwrap(),
+        b"same-invoice"
+    );
+    assert_eq!(
+        fs::read(folder.join("invoice (1).pdf")).unwrap(),
+        b"same-invoice"
+    );
+    assert!(!folder.join("other.pdf").exists());
+    assert!(!folder.join("notes.txt").exists());
+    assert!(plan
+        .actions
+        .iter()
+        .filter(|item| item.kind == ActionKind::Keep)
+        .all(|item| item.status == ActionStatus::Kept));
+
+    let log_path = plan.log_path.clone().unwrap();
+    let log = tidy::logbook::read_log(&log_path).unwrap();
+    let names: Vec<_> = log
+        .entries
+        .iter()
+        .map(|entry| entry.file_name.as_str())
+        .collect();
+    assert!(!names.contains(&"invoice.pdf"), "{names:?}");
+    assert!(!names.contains(&"invoice (1).pdf"), "{names:?}");
+    assert!(names.contains(&"notes.txt"), "{names:?}");
+    assert!(names.contains(&"other.pdf"), "{names:?}");
+
+    let preview = preview_latest(&env, &trasher).unwrap();
+    assert!(preview.dry_run);
+    assert!(!preview.fully_undone);
+    assert!(preview.items.iter().any(|item| {
+        item.file_name == "notes.txt" && item.outcome == UndoOutcome::MovedBack && !item.renamed
+    }));
+    assert!(preview
+        .items
+        .iter()
+        .any(|item| { item.file_name == "other.pdf" && item.outcome == UndoOutcome::Restored }));
+    assert!(preview
+        .items
+        .iter()
+        .all(|item| item.file_name != "invoice.pdf"));
+    assert!(!folder.join("notes.txt").exists());
+    assert_eq!(
+        fs::read(folder.join("invoice.pdf")).unwrap(),
+        b"same-invoice"
+    );
+    let pending = tidy::logbook::read_log(&log_path).unwrap();
+    assert!(!pending.undone);
+    assert!(pending.entries.iter().all(|entry| !entry.reversed));
+
+    let report = undo_latest(&env, &trasher).unwrap();
+    assert!(report.fully_undone);
+    assert!(!report.dry_run);
+    assert_eq!(fs::read(folder.join("notes.txt")).unwrap(), b"hello");
+    assert_eq!(fs::read(folder.join("other.pdf")).unwrap(), b"other-old");
+    assert_eq!(
+        fs::read(folder.join("invoice.pdf")).unwrap(),
+        b"same-invoice"
+    );
+}
+
+#[test]
+fn keep_does_not_hide_a_different_file_from_duplicate_detection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    let rules = rules_text(
+        &env,
+        r#"
+        [[rules]]
+        name = "Keep the original"
+        glob = "invoice.pdf"
+        action = "keep"
+
+        [[rules]]
+        name = "Duplicates"
+        duplicate = true
+        action = "trash"
+        "#,
+    );
+    write_aged(
+        &folder.join("invoice.pdf"),
+        b"same-invoice",
+        Duration::from_secs(50),
+    );
+    write_aged(
+        &folder.join("invoice (1).pdf"),
+        b"same-invoice",
+        Duration::from_secs(10),
+    );
+    let plan = plan_aged(&env, &folder, &rules, None, SystemTime::now());
+    let kept = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice.pdf")
+        .unwrap();
+    let extra = plan
+        .actions
+        .iter()
+        .find(|action| action.file.name == "invoice (1).pdf")
+        .unwrap();
+    assert_eq!(kept.kind, ActionKind::Keep);
+    assert_eq!(extra.kind, ActionKind::Trash);
+    assert_eq!(extra.rule_name, "Duplicates");
+    assert_eq!(extra.copy_of.as_deref(), Some("invoice.pdf"));
+}
+
+#[test]
+fn undo_dry_run_matches_the_real_collision_and_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("notes.txt"),
+        b"from-downloads",
+        Duration::from_secs(10),
+    );
+    let rules = builtin(&env);
+    let mut plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    let moved = env.home.join("Documents/Downloads/notes.txt");
+    assert_eq!(fs::read(&moved).unwrap(), b"from-downloads");
+    fs::write(folder.join("notes.txt"), b"brand-new").unwrap();
+
+    let log_bytes = fs::read(plan.log_path.as_ref().unwrap()).unwrap();
+    let preview = preview_latest(&env, &trasher).unwrap();
+    assert_eq!(preview.items.len(), 1);
+    assert!(preview.items[0].renamed, "{:?}", preview.items[0]);
+    assert!(
+        preview.items[0].message.contains("destination occupied"),
+        "{}",
+        preview.items[0].message
+    );
+    assert!(
+        preview.items[0].path.ends_with("notes (1).txt"),
+        "{}",
+        preview.items[0].path
+    );
+    assert_eq!(fs::read(folder.join("notes.txt")).unwrap(), b"brand-new");
+    assert_eq!(fs::read(&moved).unwrap(), b"from-downloads");
+    assert_eq!(
+        fs::read(plan.log_path.as_ref().unwrap()).unwrap(),
+        log_bytes
+    );
+
+    let report = undo_latest(&env, &trasher).unwrap();
+    assert_eq!(report.items[0].path, preview.items[0].path);
+    assert_eq!(fs::read(folder.join("notes.txt")).unwrap(), b"brand-new");
+    assert_eq!(
+        fs::read(folder.join("notes (1).txt")).unwrap(),
+        b"from-downloads"
+    );
+    assert!(!moved.exists());
+}
+
+#[test]
+fn undo_dry_run_skips_a_missing_file_and_does_not_create_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let folder = env.downloads();
+    write_aged(
+        &folder.join("report.pdf"),
+        b"pdf-bytes",
+        Duration::from_secs(10),
+    );
+    let rules = builtin(&env);
+    let mut plan = plan_folder(&env, &folder, &rules, None, SystemTime::now()).unwrap();
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    apply_plan(&env, &mut plan, &trasher).unwrap();
+    let moved = env.home.join("Documents/PDFs/report.pdf");
+    fs::remove_file(&moved).unwrap();
+    fs::remove_dir_all(&folder).unwrap();
+
+    let preview = preview_latest(&env, &trasher).unwrap();
+    assert!(preview.items[0].missing, "{:?}", preview.items[0]);
+    assert!(
+        preview.items[0].message.contains("would be skipped"),
+        "{}",
+        preview.items[0].message
+    );
+    assert!(
+        !folder.exists(),
+        "dry run must not recreate the original folder"
+    );
+    assert!(preview_latest(&env, &trasher).is_ok());
+    let pending = tidy::logbook::read_log(plan.log_path.as_ref().unwrap()).unwrap();
+    assert!(!pending.undone);
+    assert!(!pending.entries[0].reversed);
+}
+
+#[test]
+fn undo_dry_run_with_nothing_pending_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = env_at(tmp.path());
+    let trasher = FakeTrasher {
+        root: env.fake_trash.clone().unwrap(),
+    };
+    let err = preview_latest(&env, &trasher).unwrap_err();
+    assert!(err.to_string().contains("nothing to undo"), "{err}");
 }

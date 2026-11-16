@@ -57,9 +57,15 @@ pub fn run(cli: Cli) -> Result<u8, Error> {
             )?;
             Ok(0)
         }
-        Some(Command::Undo { json }) => {
+        Some(Command::Undo { json, dry_run }) => {
             let json = json || cli.json;
-            undo(&env, trasher.as_ref(), json, color_enabled() && !json)
+            undo(
+                &env,
+                trasher.as_ref(),
+                dry_run,
+                json,
+                color_enabled() && !json,
+            )
         }
         Some(Command::Explain { file, rules, json }) => {
             let json = json || cli.json;
@@ -595,8 +601,18 @@ fn print_rules(
     Ok(())
 }
 
-fn undo(env: &Env, trasher: &dyn Trasher, json: bool, color: bool) -> Result<u8, Error> {
-    let report = undo::undo_latest(env, trasher)?;
+fn undo(
+    env: &Env,
+    trasher: &dyn Trasher,
+    dry_run: bool,
+    json: bool,
+    color: bool,
+) -> Result<u8, Error> {
+    let report = if dry_run {
+        undo::preview_latest(env, trasher)?
+    } else {
+        undo::undo_latest(env, trasher)?
+    };
     if json {
         println!("{}", report::render_undo_json(&report)?);
     } else {

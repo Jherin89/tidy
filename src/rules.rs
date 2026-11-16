@@ -24,8 +24,13 @@ pub enum RulesSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    Move { destination: String, by_date: bool },
+    Move {
+        destination: String,
+        by_date: bool,
+    },
     Trash,
+    /// Claim the file and leave it where it is. Later rules are not evaluated.
+    Keep,
 }
 
 /// One validated rule. Conditions that are `None` or empty are not checked.
@@ -426,7 +431,7 @@ fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
                 by_date: raw.by_date,
             }
         }
-        "trash" => {
+        "trash" | "keep" => {
             if raw
                 .destination
                 .as_deref()
@@ -441,7 +446,11 @@ fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
                     "{label}: by_date is only valid when action = \"move\""
                 ));
             }
-            Action::Trash
+            if action_name == "keep" {
+                Action::Keep
+            } else {
+                Action::Trash
+            }
         }
         "delete" | "remove" | "rm" => {
             return Err(format!(
@@ -450,7 +459,7 @@ fn compile_rule(index: usize, raw: RawRule) -> Result<Rule, String> {
         }
         other => {
             return Err(format!(
-                "{label}: unknown action `{other}` (expected \"move\" or \"trash\")"
+                "{label}: unknown action `{other}` (expected \"move\", \"trash\", or \"keep\")"
             ));
         }
     };
@@ -623,6 +632,7 @@ pub fn render_rules(ruleset: &Ruleset, color: bool) -> String {
         }
         match &rule.action {
             Action::Trash => out.push_str("   action: trash\n"),
+            Action::Keep => out.push_str("   action: keep\n"),
             Action::Move {
                 destination,
                 by_date,
@@ -647,6 +657,7 @@ pub fn render_rules_json(ruleset: &Ruleset) -> Result<String, Error> {
         .map(|rule| {
             let (action, destination, by_date) = match &rule.action {
                 Action::Trash => ("trash", None, false),
+                Action::Keep => ("keep", None, false),
                 Action::Move {
                     destination,
                     by_date,
@@ -959,6 +970,18 @@ mod tests {
                 "[[rules]]\nname = \"A\"\nnope = true\naction = \"trash\"\n",
                 "unknown",
             ),
+            (
+                "[[rules]]\nname = \"A\"\nextensions = [\"pdf\"]\naction = \"keep\"\ndestination = \"~/x\"\n",
+                "destination",
+            ),
+            (
+                "[[rules]]\nname = \"A\"\nextensions = [\"pdf\"]\naction = \"keep\"\nby_date = true\n",
+                "by_date",
+            ),
+            (
+                "[[rules]]\nname = \"A\"\nextensions = [\"pdf\"]\naction = \"archive\"\n",
+                "keep",
+            ),
         ];
         for (text, needle) in cases {
             let err = Ruleset::parse(text).unwrap_err();
@@ -967,6 +990,37 @@ mod tests {
                 "expected `{needle}` in `{err}`"
             );
         }
+    }
+
+    #[test]
+    fn keep_parses_and_rejects_a_destination() {
+        let set = rules(
+            r#"
+            [[rules]]
+            name = "Leave invoices"
+            glob = "invoice*"
+            action = "keep"
+            "#,
+        );
+        assert!(matches!(set[0].action, Action::Keep));
+        let shown = render_rules(
+            &Ruleset {
+                source: RulesSource::BuiltIn,
+                path: None,
+                candidate_path: PathBuf::from("/tmp/rules.toml"),
+                rules: set,
+            },
+            false,
+        );
+        assert!(shown.contains("action: keep"), "{shown}");
+        let err = Ruleset::parse(
+            "[[rules]]\nname = \"A\"\nextensions = [\"pdf\"]\naction = \"keep\"\ndestination = \"~/Documents\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("destination is only valid when action = \"move\""),
+            "{err}"
+        );
     }
 
     #[test]

@@ -4,7 +4,21 @@
 set -euo pipefail
 DEMO="${DEMO:-/tmp/tidy-demo}"
 rm -rf "$DEMO"
-mkdir -p "$DEMO/home/Downloads" "$DEMO/home/.config" "$DEMO/home/Library/Application Support" "$DEMO/home/.Trash"
+mkdir -p "$DEMO/home/Downloads" "$DEMO/home/.config/tidy" "$DEMO/home/Library/Application Support" "$DEMO/home/.Trash"
+# Demo-only rule in front of the built-ins: claim the Keynote deck so the
+# Documents rule does not file it. A kept file stays in the preview.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+{
+  cat <<'EOF'
+# Demo-only. Claims this deck and stops later rules, including Documents.
+[[rules]]
+name = "Keep Keynote"
+glob = ["random-notes.key"]
+action = "keep"
+
+EOF
+  cat "$ROOT/src/default_rules.toml"
+} > "$DEMO/home/.config/tidy/rules.toml"
 D="$DEMO/home/Downloads"
 mk() { # name size_kb age
   head -c $(( $2 * 1024 )) /dev/zero > "$D/$1"
@@ -50,7 +64,7 @@ mkdir -p "$D/old-projects"
 # so Old installers / Old archives will not match these files. That is
 # the age rule: a copied old .dmg is not old. Screenshots are named
 # 2026-10, but by_date uses that same age, so they land in the current
-# month (2026-11 for the 0.5.0 demo), not the month in the file name.
+# month (2026-11 for the 0.6.0 demo), not the month in the file name.
 cat <<VARS
 export TIDY_HOME=$DEMO/home
 export TIDY_CONFIG_DIR="$DEMO/home/.config"

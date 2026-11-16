@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-16
+
+### Added
+
+- Rule action `keep`. A matching rule claims the file, stops later rules (including a later duplicate or `older_than` rule), and leaves the file in place. The dry-run preview, `tidy explain`, and `--json` show action `keep`, status `kept`, and the rule name. `--apply` does not move or trash it and writes no undo entry for it. `destination` and `by_date` on a keep rule are rejected with the same error as on `trash`. The command-line `--older-than` filter still runs before rules. A kept file stays in the duplicate index, so a different file can still be an extra copy of it.
+- `tidy undo --dry-run` lists what the newest not-yet-undone log would restore, including Trash items, without moving anything and without marking the log undone. It shares the real undo's decision logic (move back, restore from Trash, Finder Put Back, missing, or rename when the destination is occupied). `--json` works with `--dry-run` and adds `"mode": "dry-run"`, `from`, `renamed`, and a `missing` count. Result strings are `would-move-back`, `would-restore`, `manual`, `missing`, or `failed`. A real `tidy undo --json` document is unchanged. Exit 0 when every file would be restored; exit 1 for nothing to undo, a manual Put Back, a missing file, or any other failure.
+
 ## [0.5.0] - 2026-11-13
 
 ### Added

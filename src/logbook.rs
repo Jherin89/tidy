@@ -38,7 +38,7 @@ pub struct RunLog {
 pub struct LogEntry {
     pub original_path: PathBuf,
     pub file_name: String,
-    /// `move` or `trash`.
+    /// `move` or `trash`. Keep actions are not logged: nothing moved.
     pub action: String,
     /// Move destination, or the fake-trash path when one was used.
     pub destination: Option<PathBuf>,
@@ -54,16 +54,21 @@ pub fn write_run_log(env: &Env, plan: &Plan) -> Result<Option<PathBuf>, Error> {
         .actions
         .iter()
         .filter(|action| action.status == ActionStatus::Applied)
-        .map(|action| LogEntry {
-            original_path: action.file.path.clone(),
-            file_name: action.file.name.clone(),
-            action: match action.kind {
-                ActionKind::Move => "move".to_string(),
-                ActionKind::Trash => "trash".to_string(),
-            },
-            destination: action.destination.clone(),
-            trashed_at_unix: action.trashed_at_unix,
-            reversed: false,
+        .filter_map(|action| {
+            let action_name = match action.kind {
+                ActionKind::Move => "move",
+                ActionKind::Trash => "trash",
+                // Kept files are not Applied. Skip them if a caller ever marks one.
+                ActionKind::Keep => return None,
+            };
+            Some(LogEntry {
+                original_path: action.file.path.clone(),
+                file_name: action.file.name.clone(),
+                action: action_name.to_string(),
+                destination: action.destination.clone(),
+                trashed_at_unix: action.trashed_at_unix,
+                reversed: false,
+            })
         })
         .collect();
     if entries.is_empty() {

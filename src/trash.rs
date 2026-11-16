@@ -36,6 +36,12 @@ pub enum RestoreResult {
 
 pub trait Trasher {
     fn trash(&self, path: &Path) -> Result<TrashRecord, Error>;
+    /// What [`Trasher::restore`] would do, without moving the file.
+    ///
+    /// Undo's dry run calls this. [`Trasher::restore`] calls it and then
+    /// performs the move, so a missing file or a manual Put Back cannot
+    /// disagree between the preview and the real undo.
+    fn inspect_restore(&self, record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error>;
     fn restore(&self, record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error>;
 }
 
@@ -62,6 +68,10 @@ impl Trasher for SystemTrasher {
             fake_path: None,
             trashed_at_unix: unix_now(),
         })
+    }
+
+    fn inspect_restore(&self, record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
+        plan_system_restore(record, dest)
     }
 
     fn restore(&self, record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
@@ -94,23 +104,33 @@ impl Trasher for FakeTrasher {
         })
     }
 
+    fn inspect_restore(&self, record: &TrashRecord, _dest: &Path) -> Result<RestoreResult, Error> {
+        require_fake_path(record)?;
+        Ok(RestoreResult::Restored)
+    }
+
     fn restore(&self, record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
-        let Some(fake) = &record.fake_path else {
-            return Err(Error::msg(format!(
-                "cannot restore {}: the undo log has no fake-trash path",
-                record.file_name
-            )));
-        };
-        if !fake.exists() {
-            return Err(Error::msg(format!(
-                "cannot restore {}: {} is missing from the fake trash",
-                record.file_name,
-                fake.display()
-            )));
-        }
+        let fake = require_fake_path(record)?;
         relocate(fake, dest)?;
         Ok(RestoreResult::Restored)
     }
+}
+
+fn require_fake_path(record: &TrashRecord) -> Result<&Path, Error> {
+    let Some(fake) = record.fake_path.as_deref() else {
+        return Err(Error::msg(format!(
+            "cannot restore {}: the undo log has no fake-trash path",
+            record.file_name
+        )));
+    };
+    if !fake.exists() {
+        return Err(Error::msg(format!(
+            "cannot restore {}: {} is missing from the fake trash",
+            record.file_name,
+            fake.display()
+        )));
+    }
+    Ok(fake)
 }
 
 /// Finder is the default on macOS because it supports Put Back.
@@ -151,24 +171,53 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Read-only half of a system-Trash restore. [`restore_system`] performs it.
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn restore_system(record: &TrashRecord, _dest: &Path) -> Result<RestoreResult, Error> {
+fn plan_system_restore(record: &TrashRecord, _dest: &Path) -> Result<RestoreResult, Error> {
     Ok(RestoreResult::Manual {
         message: macos_manual_message(record),
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn restore_system(record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
+    plan_system_restore(record, dest)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn plan_system_restore(record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
     if dest != record.original_path {
         return Ok(RestoreResult::Manual {
-            message: format!(
-                "{} is still in the Trash because {} is occupied. tidy will not overwrite it; restore the file yourself.",
-                record.file_name,
-                record.original_path.display()
-            ),
+            message: occupied_trash_message(&record.file_name, &record.original_path),
         });
     }
+    if !trash_has_match(record)? {
+        return Err(Error::msg(format!(
+            "could not find {} in the Trash (original path {})",
+            record.file_name,
+            record.original_path.display()
+        )));
+    }
+    Ok(RestoreResult::Restored)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn restore_system(record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Error> {
+    match plan_system_restore(record, dest)? {
+        RestoreResult::Manual { message } => Ok(RestoreResult::Manual { message }),
+        RestoreResult::Restored => commit_system_restore(record),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn trash_has_match(record: &TrashRecord) -> Result<bool, Error> {
+    let items = trash::os_limited::list()
+        .map_err(|err| Error::msg(format!("could not list the Trash: {err}")))?;
+    Ok(items.iter().any(|item| trash_item_matches(item, record)))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn commit_system_restore(record: &TrashRecord) -> Result<RestoreResult, Error> {
     let items = trash::os_limited::list()
         .map_err(|err| Error::msg(format!("could not list the Trash: {err}")))?;
     let mut matches: Vec<_> = items
@@ -187,17 +236,21 @@ fn restore_system(record: &TrashRecord, dest: &Path) -> Result<RestoreResult, Er
     match trash::os_limited::restore_all(std::iter::once(item)) {
         Ok(()) => Ok(RestoreResult::Restored),
         Err(trash::Error::RestoreCollision { path, .. }) => Ok(RestoreResult::Manual {
-            message: format!(
-                "{} is still in the Trash because {} is occupied. tidy will not overwrite it; restore the file yourself.",
-                record.file_name,
-                path.display()
-            ),
+            message: occupied_trash_message(&record.file_name, &path),
         }),
         Err(err) => Err(Error::msg(format!(
             "could not restore {} from the Trash: {err}",
             record.file_name
         ))),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn occupied_trash_message(file_name: &str, path: &Path) -> String {
+    format!(
+        "{file_name} is still in the Trash because {} is occupied. tidy will not overwrite it; restore the file yourself.",
+        path.display()
+    )
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -252,5 +305,34 @@ mod tests {
         assert_eq!(fs::read(&src).unwrap(), b"a newer file");
         assert_eq!(fs::read(&dest).unwrap(), b"installer");
         assert!(!fake.exists());
+    }
+
+    #[test]
+    fn inspect_restore_leaves_the_fake_trash_file_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trash_dir = tmp.path().join("trash");
+        let src_dir = tmp.path().join("Downloads");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("old.dmg");
+        fs::write(&src, b"installer").unwrap();
+        let trasher = FakeTrasher { root: trash_dir };
+        let record = trasher.trash(&src).unwrap();
+        let fake = record.fake_path.clone().unwrap();
+        let planned = trasher.inspect_restore(&record, &src).unwrap();
+        assert_eq!(planned, RestoreResult::Restored);
+        assert_eq!(fs::read(&fake).unwrap(), b"installer");
+        assert!(!src.exists());
+
+        // Move the trash copy aside through relocate so the source is gone
+        // without a direct delete in this module. inspect must then report
+        // the item missing.
+        let aside = tmp.path().join("aside.dmg");
+        crate::relocate::relocate(&fake, &aside).unwrap();
+        assert!(!fake.exists());
+        let err = trasher.inspect_restore(&record, &src).unwrap_err();
+        assert!(
+            err.to_string().contains("missing from the fake trash"),
+            "{err}"
+        );
     }
 }

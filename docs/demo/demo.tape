@@ -37,7 +37,11 @@ Sleep 300ms
 Enter
 Sleep 3s
 
-# 5. Changed your mind? One command puts everything back.
+# 5. Preview the undo, then put everything back.
+Type "clear; tidy undo --dry-run | head -8"
+Sleep 300ms
+Enter
+Sleep 4s
 Type "clear; tidy undo | head -7 && ls"
 Sleep 300ms
 Enter

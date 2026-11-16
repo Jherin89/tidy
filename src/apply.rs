@@ -19,6 +19,12 @@ pub fn apply_plan(env: &Env, plan: &mut Plan, trasher: &dyn Trasher) -> Result<(
         match action.kind {
             ActionKind::Move => apply_move(env, action, &mut reserved, &mut created),
             ActionKind::Trash => apply_trash(action, trasher),
+            // A keep rule already claimed the file. Leave it, and leave the
+            // status as Kept so the undo log skips it.
+            ActionKind::Keep => {
+                action.status = ActionStatus::Kept;
+                action.error = None;
+            }
         }
     }
     plan.created_dirs = created;

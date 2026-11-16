@@ -301,6 +301,26 @@ else
   fail ".dmg was removed from the inbox"
 fi
 
+DRY_UNDO="$("$BIN" undo --dry-run 2>&1 || true)"
+if printf '%s' "$DRY_UNDO" | grep -q 'Quarterly.pages' \
+  && printf '%s' "$DRY_UNDO" | grep -q 'would move' \
+  && [[ -d "$DEST_PAGES" && ! -e "$PAGES" ]]; then
+  pass "undo --dry-run lists Quarterly.pages and changes nothing"
+else
+  fail "undo --dry-run did not list Quarterly.pages, or it moved the package"
+  printf '%s\n' "$DRY_UNDO"
+fi
+
+DRY_UNDO_JSON="$("$BIN" undo --dry-run --json 2>&1 || true)"
+if printf '%s' "$DRY_UNDO_JSON" | grep -q '"mode": "dry-run"' \
+  && printf '%s' "$DRY_UNDO_JSON" | grep -q 'would-move-back' \
+  && [[ -d "$DEST_PAGES" && ! -e "$PAGES" ]]; then
+  pass "undo --dry-run --json reports would-move-back"
+else
+  fail "undo --dry-run --json did not report a dry-run move"
+  printf '%s\n' "$DRY_UNDO_JSON"
+fi
+
 UNDO_OUT="$("$BIN" undo 2>&1 || true)"
 if [[ -d "$PAGES" && -f "${PAGES}/Contents/Data" && ! -e "$DEST_PAGES" ]]; then
   pass "undo restored the .pages package"
@@ -405,6 +425,16 @@ EOF
     fi
   else
     fail "Finder-method trash apply failed"
+  fi
+
+  DRY_TRASH="$("$BIN" undo --dry-run 2>&1 || true)"
+  if printf '%s' "$DRY_TRASH" | grep -q "$PUTBACK_NAME" \
+    && printf '%s' "$DRY_TRASH" | grep -Eq 'Put Back|manual|Trash' \
+    && [[ ! -e "$PUTBACK_FILE" ]]; then
+    pass "undo --dry-run names the trashed file and leaves it in the Trash"
+  else
+    fail "undo --dry-run did not describe the trashed file, or it restored it"
+    printf '%s\n' "$DRY_TRASH"
   fi
 
   UNDO_TRASH="$("$BIN" undo 2>&1 || true)"

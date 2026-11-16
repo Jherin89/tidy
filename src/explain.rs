@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use crate::env::{contract_home, Env};
 use crate::error::Error;
-use crate::plan::{plan_entries, ActionKind, Plan};
+use crate::plan::{plan_entries, Plan};
 use crate::rules::{ConditionExplain, Ruleset};
 use crate::scan::{self, Inspect, SkipReason};
 
@@ -269,11 +269,7 @@ fn outcome_for(
     };
     Outcome::Matched {
         rule: rule.to_string(),
-        action: match action.kind {
-            ActionKind::Move => "move",
-            ActionKind::Trash => "trash",
-        }
-        .to_string(),
+        action: action.kind.as_str().to_string(),
         destination: action.destination_display.clone(),
         destination_path: action.destination.clone(),
         copy_of: action.copy_of.clone(),

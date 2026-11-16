@@ -12,9 +12,11 @@ use clap::{Parser, Subcommand};
     about = "Rules-driven cleanup for a messy Downloads folder",
     after_help = "\
 By default tidy only prints a preview. Pass --apply to move files and send matches to the Trash.\n\
+A keep rule claims a file and leaves it in place.\n\
 Run `tidy init` to write an editable rules file, `tidy rules` to see which rules are active,\n\
 `tidy explain FILE` to see why one file matched, and `tidy schedule --install`
-to run `tidy --apply` once a day (opt-in, off by default).",
+to run `tidy --apply` once a day (opt-in, off by default).\n\
+`tidy undo --dry-run` previews the newest undo without moving files.",
     propagate_version = true
 )]
 pub struct Cli {
@@ -80,6 +82,9 @@ pub enum Command {
     },
     /// Reverse the most recent run that has not already been undone.
     Undo {
+        /// Show what would be restored. Nothing is moved and the log stays pending.
+        #[arg(long)]
+        dry_run: bool,
         /// Print the undo report as JSON.
         #[arg(long)]
         json: bool,
@@ -217,7 +222,22 @@ mod tests {
         ));
 
         let cli = Cli::try_parse_from(["tidy", "undo", "--json"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Undo { json: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Undo {
+                json: true,
+                dry_run: false
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["tidy", "undo", "--dry-run", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Undo {
+                json: true,
+                dry_run: true
+            })
+        ));
 
         let cli = Cli::try_parse_from(["tidy", "explain", "invoice.pdf", "--json"]).unwrap();
         assert!(matches!(

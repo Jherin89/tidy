@@ -20,6 +20,18 @@ use crate::scan::{self, inspect, FileEntry, Inspect, Skipped};
 pub enum ActionKind {
     Move,
     Trash,
+    /// Matched a `keep` rule. The file stays put for the rest of the run.
+    Keep,
+}
+
+impl ActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActionKind::Move => "move",
+            ActionKind::Trash => "trash",
+            ActionKind::Keep => "keep",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +39,8 @@ pub enum ActionStatus {
     Planned,
     Applied,
     Failed,
+    /// A keep action. Nothing will be moved, and no undo entry is written.
+    Kept,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +280,23 @@ fn plan_one(
                 destination: None,
                 destination_display,
                 status: ActionStatus::Planned,
+                error: None,
+                trashed_at_unix: None,
+                copy_of,
+            })
+        }
+        Action::Keep => {
+            let destination_display = match &copy_of {
+                Some(keeper) => format!("kept in place (copy of {keeper})"),
+                None => "kept in place".to_string(),
+            };
+            Ok(PlannedAction {
+                file: file.clone(),
+                rule_name: rule.name.clone(),
+                kind: ActionKind::Keep,
+                destination: None,
+                destination_display,
+                status: ActionStatus::Kept,
                 error: None,
                 trashed_at_unix: None,
                 copy_of,

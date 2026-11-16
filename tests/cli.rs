@@ -307,6 +307,7 @@ fn subcommand_help_omits_flags_that_do_not_apply() {
     )
     .unwrap();
     assert!(undo.contains("--json"), "{undo}");
+    assert!(undo.contains("--dry-run"), "{undo}");
     assert!(!undo.contains("--apply"), "{undo}");
     assert!(!undo.contains("--older-than"), "{undo}");
     assert!(!undo.contains("--rules"), "{undo}");
@@ -1143,6 +1144,286 @@ fn schedule_job_command_applies_and_undo_restores() {
     tidy(tmp.path()).arg("undo").assert().success();
     assert_eq!(fs::read(dir.join("stale.txt")).unwrap(), b"notes");
     assert!(!trash_has(&tmp.path().join("trash"), b"notes"));
+}
+
+#[test]
+fn keep_shows_in_preview_explain_and_json_and_apply_leaves_the_file() {
+    let tmp = sandbox();
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("invoice.pdf"),
+        b"invoice-bytes",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("invoice (1).pdf"),
+        b"invoice-bytes",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("other.pdf"),
+        b"other",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("notes.txt"),
+        b"hello",
+        Duration::from_secs(86_400),
+    );
+    let rules = tmp.path().join("rules.toml");
+    fs::write(
+        &rules,
+        r#"
+[[rules]]
+name = "Keep invoices"
+glob = "invoice*"
+action = "keep"
+
+[[rules]]
+name = "PDFs"
+extensions = ["pdf"]
+action = "trash"
+
+[[rules]]
+name = "Notes"
+extensions = ["txt"]
+action = "move"
+destination = "~/Documents/Downloads"
+"#,
+    )
+    .unwrap();
+
+    let preview = tidy(tmp.path())
+        .args(["--rules"])
+        .arg(&rules)
+        .arg(&dir)
+        .assert()
+        .success();
+    let stdout = String::from_utf8(preview.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Keep invoices"), "{stdout}");
+    assert!(stdout.contains("kept in place"), "{stdout}");
+    assert!(stdout.contains("invoice.pdf"), "{stdout}");
+    assert!(stdout.contains("invoice (1).pdf"), "{stdout}");
+    assert!(dir.join("invoice.pdf").is_file());
+    assert!(!tmp.path().join("home/Documents").exists());
+
+    let json_run = tidy(tmp.path())
+        .args(["--json", "--rules"])
+        .arg(&rules)
+        .arg(&dir)
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&json_run.get_output().stdout).expect("plan json");
+    let kept: Vec<_> = value["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["action"] == "keep")
+        .collect();
+    assert_eq!(kept.len(), 2, "{value}");
+    assert!(kept.iter().all(|entry| {
+        entry["rule"] == "Keep invoices"
+            && entry["status"] == "kept"
+            && entry["destination"].is_null()
+            && entry["destination_display"]
+                .as_str()
+                .unwrap()
+                .contains("kept")
+    }));
+    assert_eq!(value["summary"]["by_action"]["keep"], 2);
+
+    let explained = tidy(tmp.path())
+        .args(["explain", "--json", "--rules"])
+        .arg(&rules)
+        .arg(dir.join("invoice (1).pdf"))
+        .assert()
+        .success();
+    let explained: serde_json::Value =
+        serde_json::from_slice(&explained.get_output().stdout).unwrap();
+    assert_eq!(explained["outcome"]["status"], "matched");
+    assert_eq!(explained["outcome"]["action"], "keep");
+    assert_eq!(explained["outcome"]["rule"], "Keep invoices");
+    assert!(explained["outcome"]["destination"]
+        .as_str()
+        .unwrap()
+        .contains("kept"));
+    let rules_json = explained["rules"].as_array().unwrap();
+    assert!(rules_json
+        .iter()
+        .any(|rule| rule["name"] == "Keep invoices" && rule["result"] == "wins"));
+    assert!(rules_json
+        .iter()
+        .any(|rule| rule["name"] == "PDFs" && rule["result"] == "not evaluated"));
+
+    let text = tidy(tmp.path())
+        .args(["explain", "--rules"])
+        .arg(&rules)
+        .arg(dir.join("invoice.pdf"))
+        .assert()
+        .success();
+    let text = String::from_utf8(text.get_output().stdout.clone()).unwrap();
+    assert!(text.contains("Keep invoices"), "{text}");
+    assert!(text.contains("action") && text.contains("keep"), "{text}");
+    assert!(text.contains("kept in place"), "{text}");
+    assert!(text.contains("not evaluated"), "{text}");
+
+    let bad = tmp.path().join("bad.toml");
+    fs::write(
+        &bad,
+        "[[rules]]\nname = \"Nope\"\nextensions = [\"pdf\"]\naction = \"keep\"\ndestination = \"~/x\"\n",
+    )
+    .unwrap();
+    tidy(tmp.path())
+        .args(["--rules"])
+        .arg(&bad)
+        .arg(&dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "destination is only valid when action = \"move\"",
+        ));
+
+    let applied = tidy(tmp.path())
+        .args(["--apply", "--json", "--rules"])
+        .arg(&rules)
+        .arg(&dir)
+        .assert()
+        .success();
+    let applied: serde_json::Value = serde_json::from_slice(&applied.get_output().stdout).unwrap();
+    assert_eq!(fs::read(dir.join("invoice.pdf")).unwrap(), b"invoice-bytes");
+    assert_eq!(
+        fs::read(dir.join("invoice (1).pdf")).unwrap(),
+        b"invoice-bytes"
+    );
+    assert!(!dir.join("other.pdf").exists());
+    assert!(!dir.join("notes.txt").exists());
+    let log_path = applied["log_path"].as_str().unwrap();
+    let log_text = fs::read_to_string(log_path).unwrap();
+    assert!(!log_text.contains("invoice"), "{log_text}");
+    assert!(log_text.contains("notes.txt"), "{log_text}");
+    assert!(log_text.contains("other.pdf"), "{log_text}");
+}
+
+#[test]
+fn undo_dry_run_lists_the_log_and_leaves_it_pending() {
+    let tmp = sandbox();
+    tidy(tmp.path())
+        .args(["undo", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to undo"));
+    tidy(tmp.path())
+        .args(["undo", "--dry-run", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to undo"));
+
+    let dir = downloads(tmp.path());
+    write_aged(
+        &dir.join("report.pdf"),
+        b"pdf-bytes",
+        Duration::from_secs(86_400),
+    );
+    write_aged(
+        &dir.join("setup.dmg"),
+        b"dmg-bytes",
+        Duration::from_secs(86_400),
+    );
+    let rules = tmp.path().join("rules.toml");
+    fs::write(
+        &rules,
+        r#"
+[[rules]]
+name = "PDFs"
+extensions = ["pdf"]
+action = "move"
+destination = "~/Documents/PDFs"
+
+[[rules]]
+name = "Installers"
+extensions = ["dmg"]
+action = "trash"
+"#,
+    )
+    .unwrap();
+
+    let applied = tidy(tmp.path())
+        .args(["--apply", "--json", "--rules"])
+        .arg(&rules)
+        .arg(&dir)
+        .assert()
+        .success();
+    let applied: serde_json::Value = serde_json::from_slice(&applied.get_output().stdout).unwrap();
+    let log_path = Path::new(applied["log_path"].as_str().unwrap());
+    let log_before = fs::read(log_path).unwrap();
+    let moved = tmp.path().join("home/Documents/PDFs/report.pdf");
+    assert_eq!(fs::read(&moved).unwrap(), b"pdf-bytes");
+    assert!(trash_has(&tmp.path().join("trash"), b"dmg-bytes"));
+    assert!(!dir.join("report.pdf").exists());
+    assert!(!dir.join("setup.dmg").exists());
+
+    let dry = tidy(tmp.path())
+        .args(["undo", "--dry-run"])
+        .assert()
+        .success();
+    let dry_text = String::from_utf8(dry.get_output().stdout.clone()).unwrap();
+    assert!(dry_text.contains("report.pdf"), "{dry_text}");
+    assert!(dry_text.contains("setup.dmg"), "{dry_text}");
+    assert!(dry_text.contains("would move"), "{dry_text}");
+    assert!(dry_text.contains("from Trash"), "{dry_text}");
+    assert!(dry_text.contains("still pending"), "{dry_text}");
+    assert_eq!(fs::read(&moved).unwrap(), b"pdf-bytes");
+    assert!(trash_has(&tmp.path().join("trash"), b"dmg-bytes"));
+    assert!(!dir.join("report.pdf").exists());
+    assert_eq!(fs::read(log_path).unwrap(), log_before);
+
+    let json_run = tidy(tmp.path())
+        .args(["undo", "--dry-run", "--json"])
+        .assert()
+        .success();
+    let json: serde_json::Value = serde_json::from_slice(&json_run.get_output().stdout).unwrap();
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["mode"], "dry-run");
+    assert_eq!(json["undone"], false);
+    assert!(json["log"].as_str().unwrap().ends_with(".json"));
+    assert!(json["id"].is_string());
+    assert!(json["source_folder"].is_string());
+    assert_eq!(json["manual"], 0);
+    assert_eq!(json["errors"], 0);
+    assert_eq!(json["missing"], 0);
+    let entries = json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{json}");
+    let pdf = entries
+        .iter()
+        .find(|entry| entry["file"] == "report.pdf")
+        .unwrap();
+    assert_eq!(pdf["result"], "would-move-back");
+    assert_eq!(pdf["renamed"], false);
+    assert!(pdf["from"].is_string());
+    assert!(pdf["path"].as_str().unwrap().ends_with("report.pdf"));
+    assert!(pdf["message"].as_str().unwrap().contains("would move"));
+    let dmg = entries
+        .iter()
+        .find(|entry| entry["file"] == "setup.dmg")
+        .unwrap();
+    assert_eq!(dmg["result"], "would-restore");
+    assert!(dmg["message"].as_str().unwrap().contains("from Trash"));
+    assert_eq!(fs::read(log_path).unwrap(), log_before);
+
+    tidy(tmp.path())
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved back"))
+        .stdout(predicate::str::contains("restored"));
+    assert_eq!(fs::read(dir.join("report.pdf")).unwrap(), b"pdf-bytes");
+    assert_eq!(fs::read(dir.join("setup.dmg")).unwrap(), b"dmg-bytes");
+    assert!(!moved.exists());
+    assert!(!trash_has(&tmp.path().join("trash"), b"dmg-bytes"));
+    let log_after: serde_json::Value =
+        serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
+    assert_eq!(log_after["undone"], true);
 }
 
 fn trash_has(dir: &Path, bytes: &[u8]) -> bool {

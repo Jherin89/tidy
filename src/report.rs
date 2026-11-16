@@ -103,12 +103,29 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
     }
 
     out.push('\n');
+    let kept = plan
+        .actions
+        .iter()
+        .filter(|action| action.kind == ActionKind::Keep && action.status != ActionStatus::Failed)
+        .count();
     if !plan.applied {
         if plan.actions.is_empty() {
             line(&mut out, "Nothing to do.");
+        } else if kept == plan.actions.len() {
+            line(&mut out, &dye("Dry run. Nothing was changed.", color, "1"));
+            line(
+                &mut out,
+                "These files are kept in place. --apply will not move or trash them.",
+            );
         } else {
             line(&mut out, &dye("Dry run. Nothing was changed.", color, "1"));
             line(&mut out, "Re-run with --apply to perform these actions.");
+            if kept > 0 {
+                line(
+                    &mut out,
+                    "Kept files stay where they are. --apply writes no undo entry for them.",
+                );
+            }
         }
     } else {
         let applied = plan
@@ -118,7 +135,14 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
             .count();
         let failed = plan.failure_count();
         if applied == 0 && failed == 0 {
-            line(&mut out, "Nothing to do.");
+            if kept > 0 {
+                line(
+                    &mut out,
+                    &format!("Kept {kept} in place. Nothing was moved or trashed.",),
+                );
+            } else {
+                line(&mut out, "Nothing to do.");
+            }
         } else {
             line(
                 &mut out,
@@ -128,6 +152,9 @@ pub fn render_plan(plan: &Plan, env: &Env, color: bool) -> String {
                     format_size(plan.applied_size())
                 ),
             );
+            if kept > 0 {
+                line(&mut out, &format!("Kept {kept} in place (no undo entry).",));
+            }
             if failed > 0 {
                 line(
                     &mut out,
@@ -158,10 +185,7 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
                 "age_source": action.file.age_kind.as_str(),
                 "bundle": action.file.is_bundle,
                 "rule": action.rule_name,
-                "action": match action.kind {
-                    ActionKind::Move => "move",
-                    ActionKind::Trash => "trash",
-                },
+                "action": action.kind.as_str(),
                 "destination": action.destination.as_ref().map(|p| p.display().to_string()),
                 "destination_display": action.destination_display,
                 "copy_of": action.copy_of,
@@ -169,6 +193,7 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
                     ActionStatus::Planned => "planned",
                     ActionStatus::Applied => "applied",
                     ActionStatus::Failed => "error",
+                    ActionStatus::Kept => "kept",
                 },
                 "error": action.error,
             })
@@ -205,10 +230,7 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
             continue;
         }
         *by_rule.entry(action.rule_name.clone()).or_insert(0) += 1;
-        let key = match action.kind {
-            ActionKind::Move => "move",
-            ActionKind::Trash => "trash",
-        };
+        let key = action.kind.as_str();
         *by_action.entry(key.to_string()).or_insert(0) += 1;
     }
 
@@ -239,29 +261,69 @@ pub fn render_plan_json(plan: &Plan) -> Result<String, Error> {
 
 pub fn render_undo(report: &UndoReport, env: &Env, color: bool) -> String {
     let mut out = String::new();
-    let done = report
-        .items
-        .iter()
-        .filter(|item| matches!(item.outcome, UndoOutcome::MovedBack | UndoOutcome::Restored))
-        .count();
-    line(
-        &mut out,
-        &format!(
-            "Undid {} from {} ({} put back).",
-            dye(&report.log_id, color, "1"),
-            contract_home(&report.source_folder, &env.home),
-            done
-        ),
-    );
+    if report.dry_run {
+        let count = report.items.len();
+        let files = format!("{count} {}", plural(count, "file", "files"));
+        line(
+            &mut out,
+            &format!(
+                "Would undo {} from {} ({files}). Nothing was changed.",
+                dye(&report.log_id, color, "1"),
+                contract_home(&report.source_folder, &env.home),
+            ),
+        );
+    } else {
+        let done = report
+            .items
+            .iter()
+            .filter(|item| matches!(item.outcome, UndoOutcome::MovedBack | UndoOutcome::Restored))
+            .count();
+        line(
+            &mut out,
+            &format!(
+                "Undid {} from {} ({} put back).",
+                dye(&report.log_id, color, "1"),
+                contract_home(&report.source_folder, &env.home),
+                done
+            ),
+        );
+    }
     let col = list_width(report.items.iter().map(|item| item.file_name.as_str()));
+    let label_width = if report.dry_run { 15 } else { 10 };
     for item in &report.items {
-        let (text, code) = match item.outcome {
-            UndoOutcome::MovedBack => ("moved back", "32"),
-            UndoOutcome::Restored => ("restored", "32"),
-            UndoOutcome::Manual => ("manual", "33"),
-            UndoOutcome::Failed => ("failed", "33"),
-        };
-        let label = dye(&pad(text, 10), color, code);
+        let (text, code) = outcome_label(report, item);
+        let label = dye(&pad(text, label_width), color, code);
+        if report.dry_run {
+            match item.outcome {
+                UndoOutcome::MovedBack | UndoOutcome::Restored => {
+                    let mut detail =
+                        format!("→ {}", contract_home(Path::new(&item.path), &env.home));
+                    if item.outcome == UndoOutcome::Restored {
+                        detail.push_str("  from Trash");
+                    }
+                    if item.renamed {
+                        detail.push_str("  (destination occupied)");
+                    }
+                    line(
+                        &mut out,
+                        &format!(
+                            "  {} {}  {}",
+                            pad(&item.file_name, col),
+                            label,
+                            dye(&detail, color, "2")
+                        ),
+                    );
+                }
+                _ => {
+                    line(
+                        &mut out,
+                        &format!("  {} {}", pad(&item.file_name, col), label),
+                    );
+                    line(&mut out, &format!("    {}", item.message));
+                }
+            }
+            continue;
+        }
         match item.outcome {
             UndoOutcome::MovedBack | UndoOutcome::Restored => line(
                 &mut out,
@@ -286,6 +348,31 @@ pub fn render_undo(report: &UndoReport, env: &Env, color: bool) -> String {
         }
     }
     out.push('\n');
+    if report.dry_run {
+        if report.manual_count() > 0 {
+            line(
+                &mut out,
+                "Some files would stay in the Trash. On macOS, tidy cannot put them back for you.",
+            );
+            line(
+                &mut out,
+                "Open the Trash and move those files back (Finder: Put Back).",
+            );
+        }
+        if report.failure_count() > 0 {
+            line(&mut out, "Some files would be skipped.");
+        }
+        line(
+            &mut out,
+            &dye(
+                "Dry run. Nothing was moved, and the log is still pending.",
+                color,
+                "1",
+            ),
+        );
+        line(&mut out, "Run `tidy undo` to perform this.");
+        return out;
+    }
     if report.manual_count() > 0 {
         line(
             &mut out,
@@ -313,25 +400,58 @@ pub fn render_undo(report: &UndoReport, env: &Env, color: bool) -> String {
     out
 }
 
+fn outcome_label(
+    report: &UndoReport,
+    item: &crate::undo::UndoItem,
+) -> (&'static str, &'static str) {
+    if report.dry_run {
+        match item.outcome {
+            UndoOutcome::MovedBack => ("would move back", "32"),
+            UndoOutcome::Restored => ("would restore", "32"),
+            UndoOutcome::Manual => ("manual", "33"),
+            UndoOutcome::Failed if item.missing => ("missing", "33"),
+            UndoOutcome::Failed => ("failed", "33"),
+        }
+    } else {
+        match item.outcome {
+            UndoOutcome::MovedBack => ("moved back", "32"),
+            UndoOutcome::Restored => ("restored", "32"),
+            UndoOutcome::Manual => ("manual", "33"),
+            UndoOutcome::Failed => ("failed", "33"),
+        }
+    }
+}
+
 pub fn render_undo_json(report: &UndoReport) -> Result<String, Error> {
     let entries: Vec<serde_json::Value> = report
         .items
         .iter()
         .map(|item| {
-            serde_json::json!({
-                "file": item.file_name,
-                "path": item.path,
-                "result": match item.outcome {
-                    UndoOutcome::MovedBack => "moved-back",
-                    UndoOutcome::Restored => "restored",
-                    UndoOutcome::Manual => "manual",
-                    UndoOutcome::Failed => "failed",
-                },
-                "message": item.message,
-            })
+            if report.dry_run {
+                serde_json::json!({
+                    "file": item.file_name,
+                    "from": item.from,
+                    "path": item.path,
+                    "result": dry_result(item),
+                    "renamed": item.renamed,
+                    "message": item.message,
+                })
+            } else {
+                serde_json::json!({
+                    "file": item.file_name,
+                    "path": item.path,
+                    "result": match item.outcome {
+                        UndoOutcome::MovedBack => "moved-back",
+                        UndoOutcome::Restored => "restored",
+                        UndoOutcome::Manual => "manual",
+                        UndoOutcome::Failed => "failed",
+                    },
+                    "message": item.message,
+                })
+            }
         })
         .collect();
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "version": 1,
         "log": report.log_path.display().to_string(),
         "id": report.log_id,
@@ -341,7 +461,21 @@ pub fn render_undo_json(report: &UndoReport) -> Result<String, Error> {
         "manual": report.manual_count(),
         "errors": report.failure_count(),
     });
+    if report.dry_run {
+        value["mode"] = serde_json::json!("dry-run");
+        value["missing"] = serde_json::json!(report.missing_count());
+    }
     serde_json::to_string_pretty(&value).map_err(|err| Error::msg(format!("json: {err}")))
+}
+
+fn dry_result(item: &crate::undo::UndoItem) -> &'static str {
+    match item.outcome {
+        UndoOutcome::MovedBack => "would-move-back",
+        UndoOutcome::Restored => "would-restore",
+        UndoOutcome::Manual => "manual",
+        UndoOutcome::Failed if item.missing => "missing",
+        UndoOutcome::Failed => "failed",
+    }
 }
 
 fn render_table(plan: &Plan, color: bool) -> String {
@@ -350,10 +484,7 @@ fn render_table(plan: &Plan, color: bool) -> String {
         .actions
         .iter()
         .map(|action| {
-            let action_name = match action.kind {
-                ActionKind::Move => "move",
-                ActionKind::Trash => "trash",
-            };
+            let action_name = action.kind.as_str();
             let action_name = if action.status == ActionStatus::Failed {
                 "error"
             } else {
@@ -404,6 +535,7 @@ fn render_summary(plan: &Plan, color: bool) -> String {
     let mut by_rule: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
     let mut moves = (0usize, 0u64);
     let mut trashes = (0usize, 0u64);
+    let mut keeps = (0usize, 0u64);
     for action in &plan.actions {
         if action.status == ActionStatus::Failed && plan.applied {
             continue;
@@ -419,6 +551,10 @@ fn render_summary(plan: &Plan, color: bool) -> String {
             ActionKind::Trash => {
                 trashes.0 += 1;
                 trashes.1 += action.file.size;
+            }
+            ActionKind::Keep => {
+                keeps.0 += 1;
+                keeps.1 += action.file.size;
             }
         }
     }
@@ -438,22 +574,30 @@ fn render_summary(plan: &Plan, color: bool) -> String {
         &format!("  unmatched  {:>4}   left in place", plan.unmatched.len()),
     );
     line(&mut out, &format!("  skipped    {:>4}", plan.skipped.len()));
-    if moves.0 > 0 || trashes.0 > 0 {
+    if moves.0 > 0 || trashes.0 > 0 || keeps.0 > 0 {
         out.push('\n');
         line(&mut out, &dye("By action", color, "1"));
-        line(
-            &mut out,
-            &format!("  {:<8} {:>4}   {}", "move", moves.0, format_size(moves.1)),
-        );
-        line(
-            &mut out,
-            &format!(
-                "  {:<8} {:>4}   {}",
-                "trash",
-                trashes.0,
-                format_size(trashes.1)
-            ),
-        );
+        if moves.0 > 0 || trashes.0 > 0 {
+            line(
+                &mut out,
+                &format!("  {:<8} {:>4}   {}", "move", moves.0, format_size(moves.1)),
+            );
+            line(
+                &mut out,
+                &format!(
+                    "  {:<8} {:>4}   {}",
+                    "trash",
+                    trashes.0,
+                    format_size(trashes.1)
+                ),
+            );
+        }
+        if keeps.0 > 0 {
+            line(
+                &mut out,
+                &format!("  {:<8} {:>4}   {}", "keep", keeps.0, format_size(keeps.1)),
+            );
+        }
     }
     if !by_rule.is_empty() {
         out.push('\n');
@@ -503,6 +647,7 @@ fn paint_action_row(
         match kind {
             ActionKind::Move => "32",
             ActionKind::Trash => "33",
+            ActionKind::Keep => "34",
         }
     };
     let painted: Vec<String> = cells
