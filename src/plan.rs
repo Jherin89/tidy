@@ -14,7 +14,7 @@ use crate::env::{contract_home, expand_tilde, Env};
 use crate::error::Error;
 use crate::names::collision_name;
 use crate::rules::{is_older_than, Action, Ruleset};
-use crate::scan::{self, inspect, FileEntry, Inspect, Skipped};
+use crate::scan::{self, FileEntry, Skipped};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
@@ -108,14 +108,6 @@ pub struct FolderView {
     pub entries: Vec<FileEntry>,
     pub skipped: Vec<Skipped>,
     pub duplicates: DuplicateIndex,
-}
-
-pub fn view_folder(
-    folder: &Path,
-    older_than: Option<std::time::Duration>,
-    now: SystemTime,
-) -> Result<FolderView, Error> {
-    view_folder_with(folder, older_than, now, &[], &SystemAge)
 }
 
 pub fn view_folder_with(
@@ -391,27 +383,6 @@ pub fn choose_destination(
 
 pub fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
-}
-
-/// Re-check a single path while watching. Uses the same rules as a full scan.
-pub fn inspect_one(
-    folder: &Path,
-    path: &Path,
-    older_than: Option<std::time::Duration>,
-    now: SystemTime,
-) -> Result<Inspect, Error> {
-    inspect(folder, path, older_than, now)
-}
-
-pub fn inspect_one_with(
-    folder: &Path,
-    path: &Path,
-    older_than: Option<std::time::Duration>,
-    now: SystemTime,
-    bundle_exts: &[String],
-    ages: &dyn AgeProbe,
-) -> Result<Inspect, Error> {
-    scan::inspect_with(folder, path, older_than, now, bundle_exts, ages)
 }
 
 #[cfg(test)]

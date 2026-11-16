@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-11-16
+
+Final, feature-complete release. Behavior is unchanged from 0.6.0. No further development is planned.
+
+### Changed
+
+- Documentation only. The README is the 1.0.0 guide (status, install, usage, rules, undo, watch, daily schedule, JSON, uninstall). The notarizing section is a short note for maintainers and forks. Release notes for this tag are `docs/release-notes/v1.0.0.md`.
+
+### Maintenance
+
+- Removed unused internal helpers (`view_folder`, `inspect`, `inspect_one`, `inspect_one_with`, `DailyProgram::at_display`). No CLI, flag, JSON, or rules-schema change.
+
 ## [0.6.0] - 2026-11-16
 
 ### Added

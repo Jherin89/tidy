@@ -81,12 +81,6 @@ pub struct DailyProgram {
     pub minute: u8,
 }
 
-impl DailyProgram {
-    pub fn at_display(&self) -> String {
-        crate::parse::format_clock(self.hour, self.minute)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobInfo {
     pub loaded: bool,

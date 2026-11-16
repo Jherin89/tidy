@@ -112,15 +112,6 @@ pub enum Inspect {
 /// Classify one path. Only a regular file (or a document package:
 /// `.pages`, `.numbers`, `.key`, `.rtfd`) that is a direct child of
 /// `folder` can become a candidate. Symlinks are never followed.
-pub fn inspect(
-    folder: &Path,
-    path: &Path,
-    older_than: Option<Duration>,
-    now: SystemTime,
-) -> Result<Inspect, Error> {
-    inspect_with(folder, path, older_than, now, &[], &SystemAge)
-}
-
 pub fn inspect_with(
     folder: &Path,
     path: &Path,

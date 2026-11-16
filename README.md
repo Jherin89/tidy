@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <b>Status:</b> 1.0.0 is the final, feature-complete release. No further development is planned.
+</p>
+
+<p align="center">
   <a href="https://github.com/Jherin89/tidy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jherin89/tidy/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/Jherin89/tidy/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Jherin89/tidy?sort=semver"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
@@ -37,9 +41,10 @@ tidy undo       # changed your mind? put everything back
 - [Built-in rules](#built-in-rules)
 - [Where tidy keeps its files](#where-tidy-keeps-its-files)
 - [Command reference](#command-reference)
+- [Uninstall](#uninstall)
 - [macOS smoke test](#macos-smoke-test)
 - [FAQ and troubleshooting](#faq-and-troubleshooting)
-- [Contributing](#contributing)
+- [Building the source](#building-the-source)
 - [Notarizing the Mac binary](#notarizing-the-mac-binary)
 - [License](#license)
 
@@ -97,7 +102,7 @@ You don't need to know Rust to use tidy. Pick **Homebrew**, a **release archive*
 
 ### Option A: Homebrew (recommended)
 
-Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles updates, and it doesn't need the quarantine step that a browser download does.
+Works on macOS (Apple Silicon and Intel) and Linux. A Homebrew install does not need the quarantine step that a browser download does. 1.0.0 is the last version of this formula.
 
 1. **Open Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type *Terminal*, press <kbd>Return</kbd>).
 2. **Make sure Homebrew is installed.** Run `brew --version`. If you get `command not found`, install it with the one-line command from [brew.sh](https://brew.sh), then follow the "Next steps" it prints (they add `brew` to your PATH) and open a new Terminal window.
@@ -108,51 +113,51 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
    This adds the [jherin89/tap](https://github.com/Jherin89/homebrew-tap) tap and installs the prebuilt binary: universal on macOS, static musl on Linux. Each download is checked against a pinned SHA-256.
 4. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.6.0
+   tidy --version     # → tidy 1.0.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-5. **Later:** `brew upgrade tidy` updates it, and `brew uninstall tidy` removes it. If you set up the background watcher or daily job, run `tidy watch --uninstall` and `tidy schedule --uninstall` first.
+5. **Remove it later** with `brew uninstall tidy`. If you set up the background watcher or daily job, run `tidy watch --uninstall` and `tidy schedule --uninstall` first. Details are in [Uninstall](#uninstall). `brew upgrade tidy` does not move past 1.0.0.
 
 ### Option B: download a release archive
 
 1. **Download** the archive for your machine from the [latest release](https://github.com/Jherin89/tidy/releases/latest):
-   - Mac (Apple Silicon or Intel): `tidy-0.6.0-universal-apple-darwin.tar.gz`
-   - Linux x86_64: `tidy-0.6.0-x86_64-unknown-linux-musl.tar.gz`
-   - Linux aarch64: `tidy-0.6.0-aarch64-unknown-linux-musl.tar.gz`
+   - Mac (Apple Silicon or Intel): `tidy-1.0.0-universal-apple-darwin.tar.gz`
+   - Linux x86_64: `tidy-1.0.0-x86_64-unknown-linux-musl.tar.gz`
+   - Linux aarch64: `tidy-1.0.0-aarch64-unknown-linux-musl.tar.gz`
 2. **Open Terminal.**
 3. **Optional: check the download.** Compare this output with the `.sha256` file on the release page (`shasum -a 256` writes `hash  filename`):
    ```bash
    cd ~/Downloads
-   shasum -a 256 tidy-0.6.0-universal-apple-darwin.tar.gz
+   shasum -a 256 tidy-1.0.0-universal-apple-darwin.tar.gz
    ```
 4. **Unpack it** (use the name you downloaded):
    ```bash
-   tar -xzf tidy-0.6.0-universal-apple-darwin.tar.gz
+   tar -xzf tidy-1.0.0-universal-apple-darwin.tar.gz
    ```
-5. **On a Mac, remove the quarantine flag.** The 0.6.0 release archive is still unsigned: signing and notarization run in CI only after Apple Developer secrets are configured (see [Notarizing the Mac binary](#notarizing-the-mac-binary)). Until a release is notarized, macOS says the binary "cannot be opened because the developer cannot be verified" unless you clear quarantine after unpacking:
+5. **On a Mac, remove the quarantine flag.** The 1.0.0 release archive is not signed or notarized (see [Notarizing the Mac binary](#notarizing-the-mac-binary)). macOS says the binary "cannot be opened because the developer cannot be verified" unless you clear quarantine after unpacking:
    ```bash
-   xattr -d com.apple.quarantine tidy-0.6.0-universal-apple-darwin/tidy
+   xattr -d com.apple.quarantine tidy-1.0.0-universal-apple-darwin/tidy
    ```
-   If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step. A Homebrew install does not need it either. Once a future release is signed and notarized, that archive can skip this step. Gatekeeper checks notarization online; the tar.gz itself is not stapled.
+   If it says `No such xattr`, the flag wasn't set and you can move on. Linux builds are static musl binaries and do not need this step. A Homebrew install does not need it either. The tar.gz itself is not stapled, and this release will not get a notarized build.
 6. **Put `tidy` on your PATH.** Choose one:
    - **For your user only (no password needed):**
      ```bash
      mkdir -p ~/.local/bin
-     mv tidy-0.6.0-universal-apple-darwin/tidy ~/.local/bin/
+     mv tidy-1.0.0-universal-apple-darwin/tidy ~/.local/bin/
      echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
      source ~/.zshrc
      ```
    - **System-wide (asks for your password):**
      ```bash
      sudo mkdir -p /usr/local/bin
-     sudo mv tidy-0.6.0-universal-apple-darwin/tidy /usr/local/bin/
+     sudo mv tidy-1.0.0-universal-apple-darwin/tidy /usr/local/bin/
      ```
 7. **Verify it works:**
    ```bash
-   tidy --version     # → tidy 0.6.0
+   tidy --version     # → tidy 1.0.0
    tidy               # safe: only shows a preview of ~/Downloads
    ```
-8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-0.6.0-*`
+8. **Clean up the installer files** (optional): `rm -r ~/Downloads/tidy-1.0.0-*`
 
 ### Option C: build from source with Rust (any Mac, Linux, or Windows)
 
@@ -164,15 +169,15 @@ Works on macOS (Apple Silicon and Intel) and Linux. Homebrew also handles update
 2. **macOS only:** if you're asked to install the *Command Line Developer Tools*, click **Install** (or run `xcode-select --install`).
 3. **Build and install tidy:**
    ```bash
-   cargo install --git https://github.com/Jherin89/tidy --tag v0.6.0
+   cargo install --git https://github.com/Jherin89/tidy --tag v1.0.0
    ```
-   This takes a minute or two and puts `tidy` in `~/.cargo/bin`, which rustup already added to your PATH. Drop `--tag v0.6.0` to build the default branch instead.
+   This takes a minute or two and puts `tidy` in `~/.cargo/bin`, which rustup already added to your PATH. Drop `--tag v1.0.0` to build the default branch, which is this same 1.0.0 release.
 4. **Verify:** `tidy --version`
 
 > **Note on the name:** the command is `tidy`, but the Cargo *package* is named **`tidy-dl`**, because `tidy` on crates.io belongs to an unrelated project. Install from this repository as shown above. `cargo install tidy` would install that other project.
 
-**Updating:** `brew upgrade tidy`, download the newer release (Option B), or run `cargo install --git https://github.com/Jherin89/tidy --force` (Option C).
-**Uninstalling:** delete the `tidy` binary (`which tidy` shows where it is). You can also remove the config and log folders listed in [Where tidy keeps its files](#where-tidy-keeps-its-files).
+**This is the last release.** `brew upgrade tidy` stays on 1.0.0. There is no newer archive to download.
+**Uninstalling:** see [Uninstall](#uninstall). Stop `tidy watch` and `tidy schedule` with their own `--uninstall` commands before you remove the binary.
 
 ## Usage guide (step by step)
 
@@ -360,7 +365,7 @@ systemctl --user enable --now tidy.service
 
 Adjust `ExecStart` if `tidy` lives somewhere else (`which tidy`).
 
-### 10. Ask why one file matched: `tidy explain` (new in 0.2)
+### 10. Ask why one file matched: `tidy explain`
 
 ```bash
 tidy explain ~/Downloads/invoice-2026-03\ \(1\).pdf
@@ -569,6 +574,56 @@ The demo GIF and screenshots were recorded with these variables pointing at a th
 
 `tidy config --init` and `tidy config --show` still work and stay hidden from help. Prefer `tidy init` and `tidy rules`.
 
+## Uninstall
+
+Stop the background jobs first, then remove the binary. Config and undo logs stay until you delete those folders yourself.
+
+### 1. Remove the launchd agents (macOS)
+
+```bash
+tidy watch --uninstall
+tidy schedule --uninstall
+```
+
+Each command boots out only its own agent and deletes the plist tidy wrote:
+
+- Watch: `~/Library/LaunchAgents/com.github.jherin89.tidy.plist` (log `~/Library/Logs/tidy.log`)
+- Daily: `~/Library/LaunchAgents/com.github.jherin89.tidy.daily.plist` (log `~/Library/Logs/tidy-daily.log`)
+
+Uninstalling one does not touch the other. These are the only files tidy deletes on its own. On Linux there is no launchd agent. If you added a systemd user unit or a cron job, disable that yourself (`systemctl --user disable --now tidy.service` for the example in the watch section).
+
+### 2. Remove the binary
+
+Homebrew:
+
+```bash
+brew uninstall tidy
+```
+
+That removes the formula. It does not delete `~/.config/tidy` or the undo logs. Homebrew's `tidy-html5` formula is a different program. If you unlinked it to install this tidy, relink or reinstall it when you want HTML Tidy back.
+
+A copy you unpacked into `~/.local/bin` or `/usr/local/bin`:
+
+```bash
+rm "$(which tidy)"
+```
+
+A Cargo install (the package name is `tidy-dl`):
+
+```bash
+cargo uninstall tidy-dl
+```
+
+### 3. Remove config and data
+
+| What | Where |
+| --- | --- |
+| Rules | `~/.config/tidy/` on macOS and Linux. On macOS, also `~/Library/Application Support/tidy/rules.toml` if you wrote rules there. |
+| Undo logs | macOS: `~/Library/Application Support/tidy/logs/`. Linux: `~/.local/share/tidy/logs/`. Windows: `%APPDATA%\tidy\`. |
+| Watch and daily logs | `~/Library/Logs/tidy.log` and `~/Library/Logs/tidy-daily.log` (macOS). |
+
+Deleting these does not put files back. Run `tidy undo` first if you still want the last run reversed. tidy never removes anything from your Downloads folder as part of uninstall.
+
 ## macOS smoke test
 
 `scripts/mac-smoke-test.sh` is for a real Mac (Jordan's MacBook). It creates its own `mktemp -d` folder and **never touches `~/Downloads`**.
@@ -608,7 +663,7 @@ Homebrew's `tidy-html5` formula and macOS's own `/usr/bin/tidy` are HTML Tidy, a
 
 <details><summary><b>"tidy" cannot be opened because the developer cannot be verified</b></summary>
 
-The 0.6.0 release archive is not signed or notarized yet. After unpacking it, run `xattr -d com.apple.quarantine "$(which tidy)"`, or go to **System Settings → Privacy & Security** and click **Open Anyway**. A Homebrew install does not need this. Signing and notarization turn on in CI once the Apple Developer secrets are set; see [Notarizing the Mac binary](#notarizing-the-mac-binary). Until then, do not expect Gatekeeper to accept the GitHub archive on its own.
+The 1.0.0 release archive is not signed or notarized. After unpacking it, run `xattr -d com.apple.quarantine "$(which tidy)"`, or go to **System Settings → Privacy & Security** and click **Open Anyway**. A Homebrew install does not need this. Gatekeeper will not accept the GitHub archive on its own. See [Notarizing the Mac binary](#notarizing-the-mac-binary).
 </details>
 
 <details><summary><b><code>zsh: command not found: tidy</code></b></summary>
@@ -618,7 +673,7 @@ The folder you put it in isn't on your PATH. For `~/.local/bin`: `echo 'export P
 
 <details><summary><b><code>bad CPU type in executable</code></b></summary>
 
-You unpacked a single-architecture build on the other Mac chip. The 0.6 release archive `tidy-0.6.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
+You unpacked a single-architecture build on the other Mac chip. The 1.0.0 release archive `tidy-1.0.0-universal-apple-darwin.tar.gz` contains both. Or use [Option C](#option-c-build-from-source-with-rust-any-mac-linux-or-windows).
 </details>
 
 <details><summary><b><code>Operation not permitted</code> when reading ~/Downloads</b></summary>
@@ -653,7 +708,7 @@ Age is Date Added on a Mac, not the file's modified time. A disk image you copie
 
 <details><summary><b><code>tidy watch --install --rules</code> / <code>--older-than</code> seemed to do nothing</b></summary>
 
-In 0.2 those flags were accepted and dropped. In 0.3 they are written into the LaunchAgent's `ProgramArguments`. `tidy watch --status` shows **Rules** and **Age**. `--json` and `--apply` cannot be stored in the agent; the command errors out instead of ignoring them. The same storage applies to `tidy schedule --install`.
+`tidy watch --install` writes `--rules` and `--older-than` into the LaunchAgent's `ProgramArguments`. `tidy watch --status` shows **Rules** and **Age**. `--json` and `--apply` cannot be stored in the agent; the command errors out instead of ignoring them. The same storage applies to `tidy schedule --install`.
 </details>
 
 <details><summary><b>How is <code>tidy schedule</code> different from <code>tidy watch</code>?</b></summary>
@@ -681,9 +736,9 @@ No. Only top-level files, plus `.pages` / `.numbers` / `.key` / `.rtfd` packages
 The name `tidy` on crates.io is taken by an unrelated project. The package is `tidy-dl` and the command is still `tidy`. tidy isn't published to crates.io; install it from GitHub.
 </details>
 
-## Contributing
+## Building the source
 
-Issues and pull requests are welcome, especially new built-in rules, platform fixes, and docs.
+1.0.0 is the last release. These commands build and check this tree. They are not a plan for more features.
 
 ```bash
 git clone https://github.com/Jherin89/tidy && cd tidy
@@ -693,63 +748,25 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-- The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically. New dependencies must build on that compiler.
-- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch your real Downloads, Trash, or `launchctl`. Please keep it that way. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plists (watch and daily).
+- The toolchain is pinned to Rust **1.85.1** in `rust-toolchain.toml`, and rustup picks it up automatically.
+- Tests build a throwaway home, config, data, and Trash folder under a temp directory, so they never touch a real Downloads folder, the system Trash, or `launchctl`. A test checks that user-file removal stays in `relocate.rs`, with `launchd.rs` allowed only to delete the LaunchAgent plists (watch and daily).
 - On a Mac, `scripts/mac-smoke-test.sh` is the isolated real-`launchctl` / Finder check. It uses `TIDY_LAUNCHD_LABEL` and a temp folder; do not point it at `~/Downloads`.
 - CI runs fmt, clippy, and tests on Ubuntu and macOS 15. The macOS job lints both generated plists with `plutil`: `tidy watch --install --print` (plain and with `--rules` / `--older-than`) and `tidy schedule --print` (plain and with `--rules` / `--older-than` / `--at`). It checks that the daily plist contains `--apply`, `StartCalendarInterval`, and the daily label, and that it is not a KeepAlive watch agent. The real-Trash test runs only when `TIDY_CI_REAL_TRASH=1` (set in that job, together with `TIDY_TRASH_METHOD=nsfilemanager`).
-- Pushing a `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`) on macOS 15 and Ubuntu 24.04, attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists. The macOS job signs and notarizes only when the Apple secrets below are configured; otherwise it ships the unsigned binary and the release still succeeds.
-- To refresh the Homebrew formula in a local tap clone: `scripts/bump-homebrew.sh /path/to/homebrew-tap` (downloads checksums with your `gh` login; add `--commit` to commit, and `--push` to push). `--dry-run` or `--sha-from-dir` renders the formula without a release.
-- To re-record the demo: `cargo build --release`, then `vhs docs/demo/demo.tape` (also `dry-run.tape`, `explain.tape`, `undo.tape`) (needs [vhs](https://github.com/charmbracelet/vhs)). The demo folder is only created under `/tmp`. Screenshot month folders in that demo follow the current month, because the script backdates mtime only.
+- A `v*` tag builds a universal macOS binary and static Linux musl binaries (`x86_64` and `aarch64`) on macOS 15 and Ubuntu 24.04, attaches the archives and `.sha256` files, and uses `docs/release-notes/<tag>.md` as the release body when that file exists. The macOS job signs and notarizes only when Apple secrets are configured. They are not set for this project, so the published archive is unsigned.
+- `scripts/bump-homebrew.sh /path/to/homebrew-tap` renders the Homebrew formula into a local tap clone (checksums come from your `gh` login; `--commit` commits, and `--push` pushes). `--dry-run` or `--sha-from-dir` renders the formula without a release. Using tidy does not run this script.
+- The screenshots and `docs/demo.gif` were recorded with [vhs](https://github.com/charmbracelet/vhs): `cargo build --release`, then `vhs docs/demo/demo.tape` (also `dry-run.tape`, `explain.tape`, `undo.tape`). The demo folder is only created under `/tmp`. Screenshot month folders follow the current month, because the script backdates mtime only.
 
 ## Notarizing the Mac binary
 
-The 0.6.0 GitHub archive is **not** signed or notarized. The release workflow already contains the signing step, and it skips cleanly until the secrets below exist. Homebrew installs do not use that archive's quarantine flag. After you unpack an unsigned release archive on a Mac, clear quarantine:
+For maintainers and forks. The 1.0.0 archive from this project is not signed or notarized. After you unpack it on a Mac, clear quarantine:
 
 ```bash
-xattr -d com.apple.quarantine tidy-0.6.0-universal-apple-darwin/tidy
+xattr -d com.apple.quarantine tidy-1.0.0-universal-apple-darwin/tidy
 ```
 
-A future release can drop that note once a notarized build has shipped. Do not treat the 0.6.0 archive as signed.
+A Homebrew install does not need that. `xcrun stapler` cannot staple a bare Mach-O inside a `.tar.gz`.
 
-When the secrets are set, the `macos-universal` job imports a Developer ID certificate, signs `dist/bin/tidy` with the hardened runtime (`--options runtime --timestamp`, identifier `com.github.jherin89.tidy`, no entitlements — the CLI does not need JIT or unsigned executable memory), and submits a zip to `notarytool --wait`. The signed binary is then packed into the same `tidy-<version>-universal-apple-darwin.tar.gz` as today. `xcrun stapler` is not used: a bare Mach-O inside a `.tar.gz` cannot be stapled. Gatekeeper can still check the notarization ticket online. If signing secrets are only partly set, or signing is configured without a complete notary login, the job fails and names the missing secret *names*. It does not publish a half-signed or signed-but-unnotarized binary.
-
-Do this in order:
-
-1. Enroll in the Apple Developer Program ($99/year): <https://developer.apple.com/programs/>
-2. Create a **Developer ID Application** certificate (Certificates, Identifiers & Profiles). Make the CSR in Keychain Access.
-3. Export that certificate from Keychain Access as a `.p12` with a password.
-4. Base64-encode it on a Mac: `base64 -i developer-id.p12 | pbcopy`
-5. Create notarization credentials, either:
-   - an app-specific password at <https://appleid.apple.com> (Sign-In and Security → App-Specific Passwords), or
-   - an App Store Connect API key (Users and Access → Integrations → App Store Connect API) and download the `.p8`.
-6. In the Jherin89/tidy GitHub repo, open **Settings → Secrets and variables → Actions** and add the secrets below. Paste the values there. Do not commit them.
-7. Re-run the release workflow, or cut a new patch tag, after the secrets are in place. The macOS job then signs and notarizes. Until then it skips, and the unsigned archive is attached as today.
-
-Signing (all three are required to sign):
-
-| Secret | What it is |
-| --- | --- |
-| `APPLE_CERTIFICATE_P12_BASE64` | Base64 of the Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
-| `APPLE_SIGNING_IDENTITY` | Certificate name, for example `Developer ID Application: Jordan Herin (TEAMID)` |
-
-Notary auth, either the Apple ID trio:
-
-| Secret | What it is |
-| --- | --- |
-| `APPLE_ID` | Apple ID email |
-| `APPLE_APP_PASSWORD` | App-specific password |
-| `APPLE_TEAM_ID` | Team ID (required for Apple ID auth) |
-
-or the App Store Connect API key trio:
-
-| Secret | What it is |
-| --- | --- |
-| `APPLE_API_ISSUER_ID` | Issuer ID |
-| `APPLE_API_KEY_ID` | Key ID |
-| `APPLE_API_KEY_P8` | Contents of the `.p8` file |
-
-`APPLE_TEAM_ID` may also be set with the API key. It is required for the Apple ID path. If both notary sets are present, the workflow uses the API key.
+`.github/macos-sign-and-notarize.sh` signs `dist/bin/tidy` (hardened runtime, identifier `com.github.jherin89.tidy`, no entitlements) and submits a zip to `notarytool` only when a full set of Apple Developer secrets is present. This repository does not have those secrets, and no notarized 1.0.0 build is planned. A fork can set `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and either the Apple ID trio (`APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID`) or the App Store Connect API key trio (`APPLE_API_ISSUER_ID`, `APPLE_API_KEY_ID`, `APPLE_API_KEY_P8`). An incomplete set fails the job and names the missing secret names. Do not commit secret values.
 
 ## License
 
